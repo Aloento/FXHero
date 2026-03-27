@@ -41,7 +41,7 @@ const FORMATTERS = {
   formatPrice: 'formatPrice',
 } as const;
 
-type TradeRecord = {
+export type TradeRecord = {
   id: string;
   type: 'LONG' | 'SHORT';
   entryTime: number;
@@ -136,6 +136,32 @@ export class LocalCsvBroker {
     this.host?.equityUpdate(this.equity);
     this.updateSummaryValues();
     this.emitSnapshot();
+  }
+
+  public forceCloseAll(): void {
+    if (this.position) {
+      const closeSide = this.position.side === SIDE_BUY ? SIDE_SELL : SIDE_BUY;
+      const bar = this.datafeed.getCurrentBar();
+      if (!bar) return;
+
+      const orderId = this.nextId('ord_fc');
+      const filledOrder: PlacedOrder = {
+        id: orderId,
+        symbol: this.position.symbol,
+        type: ORDER_TYPE_MARKET,
+        side: closeSide,
+        qty: this.position.qty,
+        status: ORDER_STATUS_FILLED as never,
+        avgPrice: bar.close,
+        filledQty: this.position.qty,
+        updateTime: bar.time,
+      };
+
+      this.orderHistory.push(filledOrder);
+      this.host?.orderUpdate(filledOrder);
+
+      this.applyFilledOrder(filledOrder, bar.time, true);
+    }
   }
 
   public subscribeSnapshot(listener: (snapshot: BrokerSnapshot) => void): () => void {
@@ -349,6 +375,7 @@ export class LocalCsvBroker {
         { id: 'side', label: 'Side', dataFields: ['side'], formatter: FORMATTERS.positionSide as any },
         { id: 'qty', label: 'Qty', dataFields: ['qty'], formatter: FORMATTERS.formatQuantity as any },
         { id: 'avgPrice', label: 'Avg', dataFields: ['avgPrice'], formatter: FORMATTERS.formatPrice as any },
+        { id: 'pl', label: 'Profit', dataFields: ['pl'], formatter: FORMATTERS.fixedInCurrency as any },
       ] as any,
       historyColumns: [
         { id: 'id', label: 'ID', dataFields: ['id'], formatter: FORMATTERS.text as any },
@@ -378,7 +405,8 @@ export class LocalCsvBroker {
       side: position.side,
       avgPrice: position.avgPrice,
       updateTime: position.updateTime,
-    };
+      pl: this.floatingPnl,
+    } as unknown as Position;
   }
 
   private applyFilledOrder(order: PlacedOrder, fillTime: number, isCloseOrder: boolean): void {

@@ -16,6 +16,7 @@ interface SimulatorViewProps {
 const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit }) => {
     const { state, currentBar, tickIndex, actions } = useSimulator(datafeed);
     const [chartWidget, setChartWidget] = useState<IChartingLibraryWidget | null>(null);
+    const [attemptId, setAttemptId] = useState(0);
 
     const brokerRef = useRef<LocalCsvBroker | null>(null);
     if (!brokerRef.current) {
@@ -78,6 +79,13 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
         }
     }, [mode]);
 
+    // 自动平仓
+    useEffect(() => {
+        if (state.isFinished && mode === 'game') {
+            brokerRef.current?.forceCloseAll();
+        }
+    }, [state.isFinished, mode]);
+
     return (
         <div className="flex-1 flex flex-col w-full h-full relative">
             {mode === 'game' && (
@@ -86,12 +94,16 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
                     currentBar={currentBar}
                     onTogglePlay={actions.togglePlay}
                     onSetSpeed={actions.setSpeed}
-                    onStop={actions.exitGame}
+                    onStop={() => {
+                        brokerRef.current?.forceCloseAll();
+                        actions.exitGame();
+                    }}
                 />
             )}
 
             <div className="flex-1 min-h-0 relative">
                 <AdvancedChart
+                    key={attemptId}
                     datafeed={datafeed}
                     onChartReady={handleChartReady}
                     trading={tradingConfig}
@@ -106,6 +118,7 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
                     onRestart={() => {
                         brokerRef.current?.reset();
                         actions.initGame(Math.floor(datafeed.getTotalBars() * 0.2));
+                        setAttemptId(a => a + 1);
                     }}
                     onExit={onExit}
                 />
