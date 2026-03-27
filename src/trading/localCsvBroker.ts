@@ -19,7 +19,7 @@ const ACCOUNT_ID = 'demo-account-1' as unknown as AccountId;
 const ACCOUNT_TITLE = 'FX Hero Demo';
 const SYMBOL = 'FX_GAME';
 const CONTRACT_SIZE = 100000;
-const FIX_COMMISSION = 6;
+const COMMISSION_PER_LOT = 0;
 const LEVERAGE = 500;
 
 const CONNECTION_STATUS_CONNECTED = 1;
@@ -105,29 +105,8 @@ export class LocalCsvBroker {
       return;
     }
 
-    // Check TP / SL hit
-    let triggeredPrice: number | null = null;
-    let isClose = false;
-
-    if (this.position.side === SIDE_BUY) {
-      if (this.position.takeProfit && bar.high >= this.position.takeProfit) {
-        triggeredPrice = this.position.takeProfit;
-        isClose = true;
-      } else if (this.position.stopLoss && bar.low <= this.position.stopLoss) {
-        triggeredPrice = this.position.stopLoss;
-        isClose = true;
-      }
-    } else {
-      if (this.position.takeProfit && bar.low <= this.position.takeProfit) {
-        triggeredPrice = this.position.takeProfit;
-        isClose = true;
-      } else if (this.position.stopLoss && bar.high >= this.position.stopLoss) {
-        triggeredPrice = this.position.stopLoss;
-        isClose = true;
-      }
-    }
-
-    if (isClose && triggeredPrice !== null) {
+    const triggeredPrice = this.getTriggeredBracketPrice(this.position, bar);
+    if (triggeredPrice !== null) {
       this.executeBracketClose(triggeredPrice, bar.time);
       return;
     }
@@ -135,7 +114,7 @@ export class LocalCsvBroker {
     this.floatingPnl = this.calculateFloatingPnl(this.position, bar.close);
     this.equity = this.balance + this.floatingPnl;
 
-    this.host?.plUpdate(this.position.id, this.floatingPnl);
+    this.publishPositionPnl();
     this.host?.equityUpdate(this.equity);
     this.updateSummaryValues();
     this.emitSnapshot();
@@ -269,10 +248,10 @@ export class LocalCsvBroker {
         orders: async () => {
           const allOrders = [...this.orders];
           if (this.position) {
-            if (this.position.takeProfit) {
+            if (this.position.takeProfit !== undefined) {
               allOrders.push(this.createBracketOrder('tp', this.position, this.position.takeProfit, ORDER_TYPE_LIMIT) as any);
             }
-            if (this.position.stopLoss) {
+            if (this.position.stopLoss !== undefined) {
               allOrders.push(this.createBracketOrder('sl', this.position, this.position.stopLoss, ORDER_TYPE_STOP) as any);
             }
           }
@@ -335,8 +314,8 @@ export class LocalCsvBroker {
             updateTime: bar.time,
             limitPrice: order.limitPrice,
             stopPrice: order.stopPrice,
-            takeProfit: order.takeProfit,
-            stopLoss: order.stopLoss,
+            takeProfit: this.normalizeBracketPrice(order.takeProfit),
+            stopLoss: this.normalizeBracketPrice(order.stopLoss),
           };
 
           this.orderHistory.push(filledOrder);
@@ -381,29 +360,48 @@ export class LocalCsvBroker {
           if (!this.position || this.position.id !== positionId) {
             return;
           }
+
           const prevTp = this.position.takeProfit;
           const prevSl = this.position.stopLoss;
 
-          this.position.takeProfit = brackets.takeProfit || undefined;
-          this.position.stopLoss = brackets.stopLoss || undefined;
+          this.position.takeProfit = this.normalizeBracketPrice(brackets.takeProfit);
+          this.position.stopLoss = this.normalizeBracketPrice(brackets.stopLoss);
+          this.position.updateTime = Date.now();
 
           this.host?.positionUpdate(this.toExternalPosition(this.position)!);
 
-          if (this.position.takeProfit) {
+          if (this.position.takeProfit !== undefined) {
             this.host?.orderUpdate(this.createBracketOrder('tp', this.position, this.position.takeProfit, ORDER_TYPE_LIMIT) as any);
-          } else if (prevTp) {
+          } else if (prevTp !== undefined) {
             const canceledOrder = this.createBracketOrder('tp', this.position, prevTp, ORDER_TYPE_LIMIT);
             canceledOrder.status = ORDER_STATUS_CANCELED as any;
             this.host?.orderUpdate(canceledOrder as any);
           }
 
-          if (this.position.stopLoss) {
+          if (this.position.stopLoss !== undefined) {
             this.host?.orderUpdate(this.createBracketOrder('sl', this.position, this.position.stopLoss, ORDER_TYPE_STOP) as any);
-          } else if (prevSl) {
+          } else if (prevSl !== undefined) {
             const canceledOrder = this.createBracketOrder('sl', this.position, prevSl, ORDER_TYPE_STOP);
             canceledOrder.status = ORDER_STATUS_CANCELED as any;
             this.host?.orderUpdate(canceledOrder as any);
           }
+
+          const currentBar = this.datafeed.getCurrentBar();
+          if (currentBar) {
+            const triggeredPrice = this.getTriggeredBracketPrice(this.position, currentBar);
+            if (triggeredPrice !== null) {
+              this.executeBracketClose(triggeredPrice, currentBar.time);
+              return;
+            }
+
+            this.floatingPnl = this.calculateFloatingPnl(this.position, currentBar.close);
+            this.equity = this.balance + this.floatingPnl;
+            this.publishPositionPnl();
+            this.host?.equityUpdate(this.equity);
+          }
+
+          this.updateSummaryValues();
+          this.emitSnapshot();
         },
         reversePosition: async (positionId: string) => {
           if (!this.position || this.position.id !== positionId) {
@@ -540,21 +538,22 @@ export class LocalCsvBroker {
         avgPrice: order.avgPrice ?? 0,
         updateTime: fillTime,
         entryTime: fillTime,
-        takeProfit: order.takeProfit,
-        stopLoss: order.stopLoss,
+        takeProfit: this.normalizeBracketPrice(order.takeProfit),
+        stopLoss: this.normalizeBracketPrice(order.stopLoss),
       };
       this.floatingPnl = 0;
       this.equity = this.balance;
       this.host?.positionUpdate(this.toExternalPosition(this.position)!);
+      this.publishPositionPnl();
       this.host?.equityUpdate(this.equity);
       this.updateSummaryValues();
       this.emitSnapshot();
 
       // Emit initial brackets
-      if (this.position.takeProfit) {
+      if (this.position.takeProfit !== undefined) {
         this.host?.orderUpdate(this.createBracketOrder('tp', this.position, this.position.takeProfit, ORDER_TYPE_LIMIT) as any);
       }
-      if (this.position.stopLoss) {
+      if (this.position.stopLoss !== undefined) {
         this.host?.orderUpdate(this.createBracketOrder('sl', this.position, this.position.stopLoss, ORDER_TYPE_STOP) as any);
       }
       return;
@@ -569,17 +568,25 @@ export class LocalCsvBroker {
       current.avgPrice = (current.avgPrice * current.qty + fillPrice * order.qty) / nextQty;
       current.qty = nextQty;
       current.updateTime = fillTime;
-      if (order.takeProfit) current.takeProfit = order.takeProfit;
-      if (order.stopLoss) current.stopLoss = order.stopLoss;
 
+      const nextTakeProfit = this.normalizeBracketPrice(order.takeProfit);
+      const nextStopLoss = this.normalizeBracketPrice(order.stopLoss);
+      if (nextTakeProfit !== undefined) current.takeProfit = nextTakeProfit;
+      if (nextStopLoss !== undefined) current.stopLoss = nextStopLoss;
+
+      this.floatingPnl = this.calculateFloatingPnl(current, fillPrice);
+      this.equity = this.balance + this.floatingPnl;
       this.host?.positionUpdate(this.toExternalPosition(current)!);
+      this.publishPositionPnl();
+      this.host?.equityUpdate(this.equity);
+      this.updateSummaryValues();
       this.emitSnapshot();
 
       // Update brackets on chart
-      if (current.takeProfit) {
+      if (current.takeProfit !== undefined) {
         this.host?.orderUpdate(this.createBracketOrder('tp', current, current.takeProfit, ORDER_TYPE_LIMIT) as any);
       }
-      if (current.stopLoss) {
+      if (current.stopLoss !== undefined) {
         this.host?.orderUpdate(this.createBracketOrder('sl', current, current.stopLoss, ORDER_TYPE_STOP) as any);
       }
       return;
@@ -588,7 +595,8 @@ export class LocalCsvBroker {
     const fillPrice = order.avgPrice ?? current.avgPrice;
     const closeQty = Math.min(order.qty, current.qty);
     const pnl = this.calculateClosedPnl(current.side, current.avgPrice, fillPrice, closeQty);
-    const netPnl = pnl - FIX_COMMISSION;
+    const commission = this.calculateCommission(closeQty);
+    const netPnl = pnl - commission;
 
     this.balance += netPnl;
     this.orderHistory.push({
@@ -605,7 +613,7 @@ export class LocalCsvBroker {
       exitTime: fillTime,
       exitPrice: fillPrice,
       pnl,
-      commission: FIX_COMMISSION,
+      commission,
       netPnl,
     };
     this.trades.push(trade);
@@ -617,10 +625,10 @@ export class LocalCsvBroker {
       this.host?.positionUpdate(this.toExternalPosition(current)!);
 
       // Keep brackets updated if position partially closes
-      if (current.takeProfit) {
+      if (current.takeProfit !== undefined) {
         this.host?.orderUpdate(this.createBracketOrder('tp', current, current.takeProfit, ORDER_TYPE_LIMIT) as any);
       }
-      if (current.stopLoss) {
+      if (current.stopLoss !== undefined) {
         this.host?.orderUpdate(this.createBracketOrder('sl', current, current.stopLoss, ORDER_TYPE_STOP) as any);
       }
     } else if (order.qty > current.qty) {
@@ -633,17 +641,17 @@ export class LocalCsvBroker {
         avgPrice: fillPrice,
         updateTime: fillTime,
         entryTime: fillTime,
-        takeProfit: order.takeProfit,
-        stopLoss: order.stopLoss,
+        takeProfit: this.normalizeBracketPrice(order.takeProfit),
+        stopLoss: this.normalizeBracketPrice(order.stopLoss),
       };
       this.host?.positionsFullUpdate();
       this.host?.positionUpdate(this.toExternalPosition(this.position)!);
 
       // Update brackets on chart
-      if (this.position.takeProfit) {
+      if (this.position.takeProfit !== undefined) {
         this.host?.orderUpdate(this.createBracketOrder('tp', this.position, this.position.takeProfit, ORDER_TYPE_LIMIT) as any);
       }
-      if (this.position.stopLoss) {
+      if (this.position.stopLoss !== undefined) {
         this.host?.orderUpdate(this.createBracketOrder('sl', this.position, this.position.stopLoss, ORDER_TYPE_STOP) as any);
       }
     } else {
@@ -654,9 +662,58 @@ export class LocalCsvBroker {
 
     this.floatingPnl = this.position ? this.calculateFloatingPnl(this.position, fillPrice) : 0;
     this.equity = this.balance + this.floatingPnl;
+    this.publishPositionPnl();
     this.host?.equityUpdate(this.equity);
     this.updateSummaryValues();
     this.emitSnapshot();
+  }
+
+  private getTriggeredBracketPrice(position: InternalPosition, bar: TvBar): number | null {
+    const takeProfit = position.takeProfit;
+    const stopLoss = position.stopLoss;
+
+    if (position.side === SIDE_BUY) {
+      if (takeProfit !== undefined && bar.high >= takeProfit) {
+        return takeProfit;
+      }
+      if (stopLoss !== undefined && bar.low <= stopLoss) {
+        return stopLoss;
+      }
+      return null;
+    }
+
+    if (takeProfit !== undefined && bar.low <= takeProfit) {
+      return takeProfit;
+    }
+    if (stopLoss !== undefined && bar.high >= stopLoss) {
+      return stopLoss;
+    }
+    return null;
+  }
+
+  private publishPositionPnl(): void {
+    if (!this.position) {
+      return;
+    }
+
+    this.host?.plUpdate(this.position.id, this.floatingPnl);
+    this.host?.positionPartialUpdate(this.position.id, {
+      pl: this.floatingPnl,
+      updateTime: this.position.updateTime,
+    } as Partial<Position>);
+  }
+
+  private normalizeBracketPrice(price: unknown): number | undefined {
+    if (price === null || price === undefined || price === '') {
+      return undefined;
+    }
+
+    const normalized = typeof price === 'number' ? price : Number(price);
+    return Number.isFinite(normalized) ? normalized : undefined;
+  }
+
+  private calculateCommission(qty: number): number {
+    return COMMISSION_PER_LOT * qty;
   }
 
   private calculateFloatingPnl(position: InternalPosition, currentPrice: number): number {
