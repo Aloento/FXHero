@@ -68,8 +68,12 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
     // 初始化模式
     useEffect(() => {
         if (mode === 'game') {
-            // 从总数据的 20% 处开始回溯挑战
-            const startIdx = Math.floor(datafeed.getTotalBars() * 0.2);
+            const totalBars = datafeed.getTotalBars();
+            // 随机选择起点，留出足够后市（如一天1M数据=1440根K线）与前市（为了均线等指标预热）
+            const minStart = Math.min(Math.floor(totalBars * 0.1) || 0, 1000);
+            const maxStart = Math.max(minStart + 1, totalBars - 1440);
+            const startIdx = Math.floor(Math.random() * (maxStart - minStart) + minStart);
+
             brokerRef.current?.reset();
             actions.initGame(startIdx);
         } else {
@@ -116,8 +120,13 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
                     initialBalance={1000}
                     trades={brokerSnapshot.trades}
                     onRestart={() => {
+                        const totalBars = datafeed.getTotalBars();
+                        const minStart = Math.min(Math.floor(totalBars * 0.1) || 0, 1000);
+                        const maxStart = Math.max(minStart + 1, totalBars - 1440);
+                        const startIdx = Math.floor(Math.random() * (maxStart - minStart) + minStart);
+
                         brokerRef.current?.reset();
-                        actions.initGame(Math.floor(datafeed.getTotalBars() * 0.2));
+                        actions.initGame(startIdx);
                         setAttemptId(a => a + 1);
                     }}
                     onExit={onExit}

@@ -130,6 +130,7 @@ class CustomDatafeed implements IExternalDatafeed, IDatafeedChartApi, IDatafeedQ
         ticker: 'FX_GAME',
         minmov: 1,
         pricescale: Math.pow(10, this.precision),
+        pointvalue: 100000,
         has_intraday: true,
         supported_resolutions: ['1', '5', '15', '30', '60', 'D', 'W', 'M'] as ResolutionString[],
         volume_precision: 0,
