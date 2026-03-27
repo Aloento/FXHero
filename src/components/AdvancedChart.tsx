@@ -2,14 +2,22 @@ import React, { useCallback, useEffect, useRef } from 'react';
 import type {
   ChartingLibraryWidgetConstructor,
   ChartingLibraryWidgetOptions,
+  IBrokerConnectionAdapterHost,
+  IBrokerTerminal,
   IChartingLibraryWidget,
   ResolutionString,
+  SingleBrokerMetaInfo,
+  TradingTerminalWidgetOptions,
 } from '../charting_library';
 import CustomDatafeed from '../utils/datafeed';
 
 export interface AdvancedChartProps {
   datafeed: CustomDatafeed;
   onChartReady?: (chartWidget: IChartingLibraryWidget) => void;
+  trading?: {
+    brokerConfig: SingleBrokerMetaInfo;
+    brokerFactory: (host: IBrokerConnectionAdapterHost) => IBrokerTerminal;
+  };
 }
 
 type TradingViewEsmModule = {
@@ -27,7 +35,7 @@ const loadTradingViewEsm = (): Promise<TradingViewEsmModule> => {
   return tvEsmLoadPromise;
 };
 
-const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady }) => {
+const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, trading }) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<IChartingLibraryWidget | null>(null);
 
@@ -80,7 +88,15 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady })
           datafeed: datafeed,
         };
 
-        const tvWidget = new tvModule.widget(widgetOptions);
+        const finalOptions = trading
+          ? {
+            ...(widgetOptions as TradingTerminalWidgetOptions),
+            broker_config: trading.brokerConfig,
+            broker_factory: trading.brokerFactory,
+          }
+          : widgetOptions;
+
+        const tvWidget = new tvModule.widget(finalOptions as TradingTerminalWidgetOptions);
         widgetRef.current = tvWidget;
 
         tvWidget.onChartReady(() => {
@@ -108,7 +124,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady })
       }
     };
     // 注意：只在datafeed改变时重新初始化，不在onChartReady改变时
-  }, [datafeed]);
+  }, [datafeed, trading]);
 
   return <div ref={chartContainerRef} style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />;
 };

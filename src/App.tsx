@@ -93,6 +93,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           <div className="bg-blue-600 p-2 rounded-lg"><BarChart3 className="w-5 h-5 text-white" /></div>
           <h1 className="!m-0 !text-base !font-bold tracking-wide text-gray-800">FX 分析复盘模拟器</h1>
+          <div id="header-controls" className="ml-4 flex items-center"></div>
         </div>
 
         {parsedData && (

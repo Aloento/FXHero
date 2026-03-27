@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { IChartingLibraryWidget, IPositionLineAdapter } from '../charting_library';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { IChartingLibraryWidget } from '../charting_library';
 import { useSimulator } from '../hooks/useSimulator';
+import { LocalCsvBroker, type BrokerSnapshot } from '../trading/localCsvBroker';
 import CustomDatafeed from '../utils/datafeed';
 import AdvancedChart from './AdvancedChart';
 import GameSettlementMenu from './GameSettlementMenu';
@@ -16,8 +17,37 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
     const { state, currentBar, tickIndex, actions } = useSimulator(datafeed);
     const [chartWidget, setChartWidget] = useState<IChartingLibraryWidget | null>(null);
 
-    // 保存 TradingView 图表上绘制的持仓线实例
-    const positionLineRef = useRef<IPositionLineAdapter | null>(null);
+    const brokerRef = useRef<LocalCsvBroker | null>(null);
+    if (!brokerRef.current) {
+        brokerRef.current = new LocalCsvBroker(datafeed);
+    }
+
+    const [brokerSnapshot, setBrokerSnapshot] = useState<BrokerSnapshot>(brokerRef.current.getSnapshot());
+
+    useEffect(() => {
+        const broker = brokerRef.current;
+        if (!broker) return;
+        const unsubscribe = broker.subscribeSnapshot(setBrokerSnapshot);
+        return unsubscribe;
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            brokerRef.current?.dispose();
+            brokerRef.current = null;
+        };
+    }, []);
+
+    const tradingConfig = useMemo(() => {
+        const broker = brokerRef.current;
+        if (!broker || mode !== 'game') {
+            return undefined;
+        }
+        return {
+            brokerConfig: broker.getWidgetBrokerConfig(),
+            brokerFactory: broker.createBrokerFactory(),
+        };
+    }, [mode]);
 
     // 用useCallback包装onChartReady，避免不必要的重新渲染
     const handleChartReady = useCallback((widget: IChartingLibraryWidget) => {
@@ -39,6 +69,7 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
         if (mode === 'game') {
             // 从总数据的 20% 处开始回溯挑战
             const startIdx = Math.floor(datafeed.getTotalBars() * 0.2);
+            brokerRef.current?.reset();
             actions.initGame(startIdx);
         } else {
             // 复盘模式，直接显示全部
@@ -47,90 +78,8 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
         }
     }, [mode]);
 
-    // 根据持仓状态绘制持仓线
-    useEffect(() => {
-        if (!chartWidget) return;
-
-        if (state.position) {
-            if (!positionLineRef.current) {
-                chartWidget.chart().createPositionLine().then(positionLine => {
-                    if (positionLine) {
-                        positionLineRef.current = positionLine;
-                        positionLine
-                            .onClose(() => {
-                                handleClosePosition();
-                            })
-                            .setText(state.position?.type === 'LONG' ? "做多 1手" : "做空 1手")
-                            .setQuantity("")
-                            .setPrice(state.position?.entryPrice ?? 0)
-                            .setExtendLeft(false)
-                            .setLineStyle(0) // solid
-                            .setLineColor(state.position?.type === 'LONG' ? "#26A69A" : "#EF5350")
-                            .setBodyTextColor("#fff")
-                            .setBodyBackgroundColor(state.position?.type === 'LONG' ? "#26A69A" : "#EF5350")
-                            .setBodyBorderColor(state.position?.type === 'LONG' ? "#26A69A" : "#EF5350");
-                    }
-                }).catch(console.error);
-            } else {
-                const pnl = (state.equity - state.balance).toFixed(2);
-                positionLineRef.current.setText(`${state.position.type === 'LONG' ? "做多" : "做空"} (盈亏: $${pnl})`);
-            }
-        } else {
-            if (positionLineRef.current) {
-                try { positionLineRef.current.remove(); } catch (e) { }
-                positionLineRef.current = null;
-            }
-        }
-    }, [chartWidget, state.position, state.equity]);
-
-    const handleOpenLong = () => {
-        actions.openPosition('LONG');
-    };
-
-    const handleOpenShort = () => {
-        actions.openPosition('SHORT');
-    };
-
-    const handleClosePosition = () => {
-        const trade = actions.closePosition();
-        if (trade && chartWidget) {
-            // 平仓后在图表上做标记
-            const chart = chartWidget.chart();
-
-            // 入场标记
-            chart.createExecutionShape().then(shape => {
-                shape
-                    .setText(trade.type === 'LONG' ? "Buy" : "Sell")
-                    .setTextColor("rgba(0,0,0,1)")
-                    .setArrowColor(trade.type === 'LONG' ? "rgba(38, 166, 154, 1)" : "rgba(239, 83, 80, 1)")
-                    .setDirection(trade.type === 'LONG' ? "buy" : "sell")
-                    .setTime(trade.entryTime / 1000)
-                    .setPrice(trade.entryPrice);
-            }).catch(console.error);
-
-            // 出场标记
-            chart.createExecutionShape().then(shape => {
-                shape
-                    .setText(trade.type === 'LONG' ? `Close Long\nPnL: $${trade.netPnl.toFixed(2)}` : `Close Short\nPnL: $${trade.netPnl.toFixed(2)}`)
-                    .setTooltip(`Entry: ${trade.entryPrice}\nExit: ${trade.exitPrice}\nNet PnL: $${trade.netPnl.toFixed(2)}`)
-                    .setTextColor(trade.netPnl >= 0 ? "rgba(0,0,0,1)" : "rgba(0,0,0,1)")
-                    .setArrowColor(trade.type === 'LONG' ? "rgba(239, 83, 80, 1)" : "rgba(38, 166, 154, 1)")
-                    .setDirection(trade.type === 'LONG' ? "sell" : "buy")
-                    .setTime(trade.exitTime / 1000)
-                    .setPrice(trade.exitPrice);
-            }).catch(console.error);
-        }
-    };
-
     return (
         <div className="flex-1 flex flex-col w-full h-full relative">
-            <div className="flex-1 min-h-0 relative">
-                <AdvancedChart
-                    datafeed={datafeed}
-                    onChartReady={handleChartReady}
-                />
-            </div>
-
             {mode === 'game' && (
                 <SimulatorControls
                     state={state}
@@ -138,18 +87,26 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
                     onTogglePlay={actions.togglePlay}
                     onSetSpeed={actions.setSpeed}
                     onStop={actions.exitGame}
-                    onOpenLong={handleOpenLong}
-                    onOpenShort={handleOpenShort}
-                    onClosePosition={handleClosePosition}
                 />
             )}
 
+            <div className="flex-1 min-h-0 relative">
+                <AdvancedChart
+                    datafeed={datafeed}
+                    onChartReady={handleChartReady}
+                    trading={tradingConfig}
+                />
+            </div>
+
             {state.isFinished && mode === 'game' && (
                 <GameSettlementMenu
-                    balance={state.balance}
+                    balance={brokerSnapshot.balance}
                     initialBalance={1000}
-                    trades={state.tradeHistory}
-                    onRestart={() => actions.initGame(Math.floor(datafeed.getTotalBars() * 0.2))}
+                    trades={brokerSnapshot.trades}
+                    onRestart={() => {
+                        brokerRef.current?.reset();
+                        actions.initGame(Math.floor(datafeed.getTotalBars() * 0.2));
+                    }}
                     onExit={onExit}
                 />
             )}
