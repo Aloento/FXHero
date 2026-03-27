@@ -186,17 +186,17 @@ export class LocalCsvBroker {
 
   public createBrokerFactory(): (host: IBrokerConnectionAdapterHost) => IBrokerTerminal {
     return (host: IBrokerConnectionAdapterHost) => {
-      this.host = host;
+      const safeHost = host ?? null;
+      this.host = safeHost;
 
-      // Some versions of TV broker API prefix methods or lack connectionStatusUpdate.
-      // We check if it exists before calling it to avoid "Cannot read properties of undefined".
-      if (host && typeof host.connectionStatusUpdate === 'function') {
-        host.connectionStatusUpdate(CONNECTION_STATUS_CONNECTED as never);
-      }
-
-      if (host && host.factory) {
-        this.summaryBalance = host.factory.createWatchedValue ? host.factory.createWatchedValue(this.balance) : null;
-        this.summaryEquity = host.factory.createWatchedValue ? host.factory.createWatchedValue(this.equity) : null;
+      // Avoid calling host.connectionStatusUpdate during factory creation.
+      // Some runtime paths call broker_factory before host is fully prepared.
+      if (safeHost?.factory?.createWatchedValue) {
+        this.summaryBalance = safeHost.factory.createWatchedValue(this.balance);
+        this.summaryEquity = safeHost.factory.createWatchedValue(this.equity);
+      } else {
+        this.summaryBalance = null;
+        this.summaryEquity = null;
       }
 
       const brokerImpl = {
