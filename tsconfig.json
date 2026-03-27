@@ -17,6 +17,6 @@
     /* Linting */
     "strict": false
   },
-  "include": ["src", "public/charting_library/charting_library.d.ts"],
+  "include": ["src", "src/charting_library.d.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

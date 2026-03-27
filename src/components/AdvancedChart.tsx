@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import type {
+  ChartingLibraryWidgetConstructor,
   ChartingLibraryWidgetOptions,
   IChartingLibraryWidget,
   ResolutionString,
-} from '../../public/charting_library/charting_library';
+} from '../charting_library';
 import CustomDatafeed from '../utils/datafeed';
 
 export interface AdvancedChartProps {
@@ -11,75 +12,19 @@ export interface AdvancedChartProps {
   onChartReady?: (chartWidget: IChartingLibraryWidget) => void;
 }
 
-// 标志全局script是否已开始加载，避免重复加载
-let tvLibraryLoadingStarted = false;
-let tvLibraryLoadPromise: Promise<void> | null = null;
+type TradingViewEsmModule = {
+  widget: ChartingLibraryWidgetConstructor;
+};
 
-const loadScript = (src: string, globalVarName: string): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    // 如果全局变量已存在，直接返回
-    if (window[globalVarName as keyof Window]) {
-      return resolve();
-    }
+let tvEsmLoadPromise: Promise<TradingViewEsmModule> | null = null;
 
-    // 如果已经开始加载，返回现有的Promise
-    if (tvLibraryLoadingStarted && tvLibraryLoadPromise) {
-      return tvLibraryLoadPromise.then(resolve).catch(reject);
-    }
+const loadTradingViewEsm = (): Promise<TradingViewEsmModule> => {
+  if (!tvEsmLoadPromise) {
+    const modulePath = '/tradingview/charting_library.esm.js';
+    tvEsmLoadPromise = import(/* @vite-ignore */ modulePath) as Promise<TradingViewEsmModule>;
+  }
 
-    // 检查script标签是否存在
-    const existingScript = document.querySelector(`script[src="${src}"]`);
-    if (existingScript) {
-      tvLibraryLoadingStarted = true;
-
-      // 设置超时，防止无限等待
-      const timeout = 30000; // 30秒超时
-      const startTime = Date.now();
-
-      tvLibraryLoadPromise = new Promise((resolveTimeout, rejectTimeout) => {
-        const checkInterval = setInterval(() => {
-          if (window[globalVarName as keyof Window]) {
-            clearInterval(checkInterval);
-            tvLibraryLoadingStarted = false;
-            tvLibraryLoadPromise = null;
-            resolveTimeout();
-          } else if (Date.now() - startTime > timeout) {
-            clearInterval(checkInterval);
-            tvLibraryLoadingStarted = false;
-            tvLibraryLoadPromise = null;
-            console.error('[AdvancedChart] TradingView initialization timeout');
-            rejectTimeout(new Error('TradingView initialization timeout'));
-          }
-        }, 100);
-      });
-
-      return tvLibraryLoadPromise.then(resolve).catch(reject);
-    }
-
-    // 创建新的script标签
-    tvLibraryLoadingStarted = true;
-
-    const script = document.createElement('script');
-    script.src = src;
-    script.type = 'text/javascript';
-
-    tvLibraryLoadPromise = new Promise((resolveScript, rejectScript) => {
-      script.onload = () => {
-        tvLibraryLoadingStarted = false;
-        tvLibraryLoadPromise = null;
-        resolveScript();
-      };
-
-      script.onerror = () => {
-        tvLibraryLoadingStarted = false;
-        tvLibraryLoadPromise = null;
-        rejectScript(new Error(`Failed to load ${src}`));
-      };
-    });
-
-    document.head.appendChild(script);
-    return tvLibraryLoadPromise.then(resolve).catch(reject);
-  });
+  return tvEsmLoadPromise;
 };
 
 const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady }) => {
@@ -98,8 +43,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady })
 
     const initWidget = async () => {
       try {
-        // 加载 public/ 目录下的原生脚本。此处 TradingView 默认挂载在 window.TradingView 上
-        await loadScript('/charting_library/charting_library.js', 'TradingView');
+        const tvModule = await loadTradingViewEsm();
 
         if (!isMounted) {
           return;
@@ -118,7 +62,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady })
           symbol: 'FX_GAME',
           interval: '1' as ResolutionString,
           container: chartContainerRef.current,
-          library_path: '/charting_library/',
+          library_path: '/tradingview/',
           locale: 'zh',
           disabled_features: [
             'header_symbol_search',
@@ -136,7 +80,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady })
           datafeed: datafeed,
         };
 
-        const tvWidget = new window.TradingView.widget(widgetOptions);
+        const tvWidget = new tvModule.widget(widgetOptions);
         widgetRef.current = tvWidget;
 
         tvWidget.onChartReady(() => {

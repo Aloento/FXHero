@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { IChartingLibraryWidget, IPositionLineAdapter } from '../../public/charting_library/charting_library';
+import type { IChartingLibraryWidget, IPositionLineAdapter } from '../charting_library';
 import { useSimulator } from '../hooks/useSimulator';
 import CustomDatafeed from '../utils/datafeed';
 import AdvancedChart from './AdvancedChart';

@@ -12,7 +12,7 @@ import type {
   ResolveCallback,
   SearchSymbolsCallback,
   SubscribeBarsCallback,
-} from '../../public/charting_library/charting_library';
+} from '../charting_library';
 import { TvBar } from './csvParser';
 
 type SubscribeCallback = (bar: Bar) => void;
