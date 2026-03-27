@@ -17,10 +17,6 @@ import { TvBar } from './csvParser';
 
 type SubscribeCallback = (bar: Bar) => void;
 
-const DEBUG = (message: string, data?: any) => {
-  console.log(`[CustomDatafeed] ${message}`, data ?? '');
-};
-
 class CustomDatafeed implements IExternalDatafeed, IDatafeedChartApi {
   private bars: TvBar[];
   private currentTickIndex: number;
@@ -67,7 +63,6 @@ class CustomDatafeed implements IExternalDatafeed, IDatafeedChartApi {
   }
 
   onReady(callback: OnReadyCallback): void {
-    DEBUG('onReady called');
     setTimeout(() =>
       callback({
         supported_resolutions: ['1', '5', '15', '30', '60', 'D', 'W', 'M'] as ResolutionString[],
@@ -84,7 +79,6 @@ class CustomDatafeed implements IExternalDatafeed, IDatafeedChartApi {
     symbolType: string,
     onResult: SearchSymbolsCallback
   ): void {
-    DEBUG('searchSymbols called', { userInput });
     onResult([]);
   }
 
@@ -93,7 +87,6 @@ class CustomDatafeed implements IExternalDatafeed, IDatafeedChartApi {
     onResolve: ResolveCallback,
     onError: DatafeedErrorCallback
   ): void {
-    DEBUG('resolveSymbol called', { symbolName });
     setTimeout(() => {
       onResolve({
         name: 'FX_GAME',
@@ -123,14 +116,6 @@ class CustomDatafeed implements IExternalDatafeed, IDatafeedChartApi {
     onError: DatafeedErrorCallback
   ): void {
     const { from, to, firstDataRequest } = periodParams;
-    DEBUG('getBars called', {
-      resolution,
-      from,
-      to,
-      firstDataRequest,
-      currentTickIndex: this.currentTickIndex,
-      totalBars: this.bars.length
-    });
 
     const fromMs = from * 1000;
     const toMs = to * 1000;
@@ -140,11 +125,6 @@ class CustomDatafeed implements IExternalDatafeed, IDatafeedChartApi {
     const visibleBars = this.bars.filter(
       (b) => b.time >= fromMs && b.time <= toMs && b.time <= currentSimulatedTime
     );
-
-    DEBUG('getBars result', {
-      visibleBarsCount: visibleBars.length,
-      hasData: visibleBars.length > 0
-    });
 
     if (visibleBars.length > 0) {
       const historyMetadata: HistoryMetadata = { noData: false };
@@ -167,12 +147,10 @@ class CustomDatafeed implements IExternalDatafeed, IDatafeedChartApi {
     listenerGuid: string,
     onResetCacheNeededCallback: () => void
   ): void {
-    DEBUG('subscribeBars called', { resolution, listenerGuid });
     this.onRealtimeCallback = onTick;
   }
 
   unsubscribeBars(listenerGuid: string): void {
-    DEBUG('unsubscribeBars called', { listenerGuid });
     this.onRealtimeCallback = null;
   }
 }
