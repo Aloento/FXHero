@@ -272,12 +272,12 @@ export class LocalCsvBroker {
       supportEditAmount: true,
       supportModifyOrderPrice: true,
       supportModifyBrackets: true,
-      supportPLUpdate: false,
+      supportPLUpdate: true,
       supportMargin: true,
-      supportLeverage: true,
-      supportPlaceOrderPreview: true,
+      supportLeverage: false,
+      supportPlaceOrderPreview: false,
       supportSymbolSearch: false,
-      supportExecutions: true,
+      supportExecutions: false,
     };
 
     return {
@@ -912,12 +912,11 @@ export class LocalCsvBroker {
       return;
     }
 
-    this.safeHostCall(() => this.host?.plUpdate(this.position.id, this.floatingPnl));
-    this.safeHostCall(() => this.host?.positionUpdate(this.toExternalPosition(this.position)!));
-    this.safeHostCall(() => this.host?.positionPartialUpdate(this.position.id, {
+    this.host?.plUpdate(this.position.id, this.floatingPnl);
+    this.host?.positionPartialUpdate(this.position.id, {
       pl: this.floatingPnl,
       updateTime: this.position.updateTime,
-    } as Partial<Position>));
+    } as Partial<Position>);
   }
 
   private getPriceEpsilon(): number {
@@ -1080,8 +1079,8 @@ export class LocalCsvBroker {
   }
 
   private publishAccountState(): void {
-    this.safeHostCall(() => this.host?.equityUpdate(this.equity));
-    this.safeHostCall(() => this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin()));
+    this.host?.equityUpdate(this.equity);
+    this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
     this.updateSummaryValues();
     this.emitSnapshot();
   }
@@ -1133,10 +1132,7 @@ export class LocalCsvBroker {
       this.orderHistory.push(normalizedOrder);
     }
 
-    this.safeHostCall(() => this.host?.orderUpdate(normalizedOrder));
-    if (FINAL_ORDER_STATUSES.has(normalizedOrder.status as number)) {
-      this.safeHostCall(() => this.host?.ordersFullUpdate());
-    }
+    this.host?.orderUpdate(normalizedOrder);
   }
 
   private emitSnapshot(): void {
