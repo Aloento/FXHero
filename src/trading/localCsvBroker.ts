@@ -19,7 +19,7 @@ const ACCOUNT_ID = 'demo-account-1' as unknown as AccountId;
 const ACCOUNT_TITLE = 'FX Hero Demo';
 const SYMBOL = 'FX_GAME';
 const CONTRACT_SIZE = 100000;
-const COMMISSION_PER_LOT = 0;
+const COMMISSION_PER_LOT = 6;
 const LEVERAGE = 500;
 
 const CONNECTION_STATUS_CONNECTED = 1;
@@ -253,7 +253,7 @@ export class LocalCsvBroker {
       supportEditAmount: true,
       supportModifyOrderPrice: true,
       supportModifyBrackets: true,
-      supportPLUpdate: true,
+      supportPLUpdate: false,
       supportMargin: false,
       supportLeverage: false,
       supportSymbolSearch: false,
@@ -270,15 +270,6 @@ export class LocalCsvBroker {
       const safeHost = host ?? null;
       this.host = safeHost;
 
-      // Avoid calling host.connectionStatusUpdate during factory creation.
-      // Some runtime paths call broker_factory before host is fully prepared.
-      if (safeHost?.factory?.createWatchedValue) {
-        this.summaryBalance = safeHost.factory.createWatchedValue(this.balance);
-        this.summaryEquity = safeHost.factory.createWatchedValue(this.equity);
-      } else {
-        this.summaryBalance = null;
-        this.summaryEquity = null;
-      }
 
       const brokerImpl = {
         chartContextMenuActions: async (_context: unknown, options?: unknown) => {
@@ -396,6 +387,26 @@ export class LocalCsvBroker {
           if (idx >= 0) {
             this.orders[idx] = order;
             this.host?.orderUpdate(order);
+          } else if (this.position && order.parentId === this.position.id) {
+            // Modify position brackets
+            if (order.id.startsWith('tp_')) {
+              this.position.takeProfit = this.normalizeBracketPrice(order.limitPrice);
+              this.position.updateTime = Date.now();
+            } else if (order.id.startsWith('sl_')) {
+              this.position.stopLoss = this.normalizeBracketPrice(order.stopPrice);
+              this.position.updateTime = Date.now();
+            }
+            this.host?.positionUpdate(this.toExternalPosition(this.position)!);
+            this.host?.orderUpdate(order);
+            
+            // Re-evaluate in case new bracket is triggered immediately
+            const currentBar = this.datafeed.getCurrentBar();
+            if (currentBar) {
+              const triggeredPrice = this.getTriggeredBracketPrice(this.position, currentBar);
+              if (triggeredPrice !== null) {
+                this.executeBracketClose(triggeredPrice, currentBar.time);
+              }
+            }
           }
         },
         cancelOrder: async (orderId: string) => {
@@ -407,6 +418,23 @@ export class LocalCsvBroker {
             this.orders.splice(idx, 1);
             this.orderHistory.push(order);
             this.host?.orderUpdate(order);
+          } else if (this.position) {
+            let canceledOrder: Order | null = null;
+            if (orderId === `tp_${this.position.id}`) {
+              canceledOrder = this.createBracketOrder('tp', this.position, this.position.takeProfit!, ORDER_TYPE_LIMIT);
+              this.position.takeProfit = undefined;
+              this.position.updateTime = Date.now();
+            } else if (orderId === `sl_${this.position.id}`) {
+              canceledOrder = this.createBracketOrder('sl', this.position, this.position.stopLoss!, ORDER_TYPE_STOP);
+              this.position.stopLoss = undefined;
+              this.position.updateTime = Date.now();
+            }
+            if (canceledOrder) {
+              (canceledOrder as any).status = ORDER_STATUS_CANCELED;
+              (canceledOrder as any).updateTime = Date.now();
+              this.host?.positionUpdate(this.toExternalPosition(this.position)!);
+              this.host?.orderUpdate(canceledOrder);
+            }
           }
         },
         closePosition: async (positionId: string, amount?: number) => {
@@ -493,6 +521,13 @@ export class LocalCsvBroker {
   }
 
   private buildAccountManagerInfo(): AccountManagerInfo {
+    if (!this.summaryBalance && this.host?.factory?.createWatchedValue) {
+      this.summaryBalance = this.host.factory.createWatchedValue(this.balance);
+    }
+    if (!this.summaryEquity && this.host?.factory?.createWatchedValue) {
+      this.summaryEquity = this.host.factory.createWatchedValue(this.equity);
+    }
+
     return {
       accountTitle: ACCOUNT_TITLE,
       summary: [
@@ -598,6 +633,9 @@ export class LocalCsvBroker {
 
   private applyFilledOrder(order: PlacedOrder, fillTime: number, isCloseOrder: boolean): void {
     if (!this.position) {
+      const commission = this.calculateCommission(order.qty);
+      this.balance -= commission;
+
       this.position = {
         id: this.nextId('pos'),
         symbol: order.symbol,
@@ -631,6 +669,9 @@ export class LocalCsvBroker {
     const sameSide = current.side === order.side;
 
     if (sameSide && !isCloseOrder) {
+      const commission = this.calculateCommission(order.qty);
+      this.balance -= commission;
+
       const nextQty = current.qty + order.qty;
       const fillPrice = order.avgPrice ?? current.avgPrice;
       current.avgPrice = (current.avgPrice * current.qty + fillPrice * order.qty) / nextQty;
@@ -776,7 +817,18 @@ export class LocalCsvBroker {
       return undefined;
     }
 
-    const normalized = typeof price === 'number' ? price : Number(price);
+    let val = price;
+    if (typeof price === 'object' && price !== null) {
+      if ('price' in price) {
+        val = (price as any).price;
+      } else if ('limitPrice' in price) {
+        val = (price as any).limitPrice;
+      } else if ('stopPrice' in price) {
+        val = (price as any).stopPrice;
+      }
+    }
+
+    const normalized = typeof val === 'number' ? val : Number(val);
     return Number.isFinite(normalized) ? normalized : undefined;
   }
 
