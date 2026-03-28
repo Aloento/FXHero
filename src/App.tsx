@@ -89,10 +89,10 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 flex flex-col font-sans">
-      <header className="bg-white border-b border-gray-200 p-4 flex items-center justify-between shrink-0 shadow-sm z-10 w-full">
+      <header className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between shrink-0 shadow-sm z-10 w-full">
         <div className="flex items-center gap-3">
           <div className="bg-blue-600 p-2 rounded-lg"><BarChart3 className="w-5 h-5 text-white" /></div>
-          <h1 className="!m-0 !text-base !font-bold tracking-wide text-gray-800">FX 分析复盘模拟器</h1>
+          <h1 className="m-0! text-base! font-bold! tracking-wide text-gray-800">FX 分析复盘模拟器</h1>
           <div id="header-controls" className="ml-4 flex items-center"></div>
         </div>
 

@@ -6,8 +6,22 @@ export interface CsvRow {
   High: string;
   Low: string;
   Close: string;
+  XL_Color?: string;
+  TTW_Upper?: string;
+  TTW_Middle?: string;
+  TTW_Lower?: string;
+  Fox_IsPivot?: string;
+  Fox_Level?: string;
+  Est_IsPivot?: string;
+  Est_Level?: string;
+  "HS_B0(High)"?: string;
+  "HS_B1(Low)"?: string;
+  "HS_B2(Open)"?: string;
+  "HS_B3(Close)"?: string;
   [key: string]: any;
 }
+
+export type PivotLevel = 'HIGH' | 'LOW';
 
 export interface TvBar {
   time: number; // in milliseconds
@@ -16,6 +30,18 @@ export interface TvBar {
   low: number;
   close: number;
   volume?: number;
+  xlColor?: string;
+  ttwUpper?: number | null;
+  ttwMiddle?: number | null;
+  ttwLower?: number | null;
+  hsHigh?: number | null;
+  hsLow?: number | null;
+  hsOpen?: number | null;
+  hsClose?: number | null;
+  foxIsPivot?: boolean;
+  foxLevel?: PivotLevel | null;
+  estIsPivot?: boolean;
+  estLevel?: PivotLevel | null;
 }
 
 export interface ParsedCsvData {
@@ -41,6 +67,25 @@ const calculatePrecision = (rawData: any[]): number => {
     }
   }
   return Math.min(Math.max(maxDecimals, 2), 6);
+};
+
+const parseOptionalNumber = (value: unknown): number | null => {
+  if (value == null) return null;
+  const str = String(value).trim();
+  if (!str) return null;
+  const num = Number(str);
+  return Number.isFinite(num) ? num : null;
+};
+
+const parseBooleanFlag = (value: unknown): boolean => {
+  return String(value ?? '').trim().toUpperCase() === 'TRUE';
+};
+
+const parsePivotLevel = (value: unknown): PivotLevel | null => {
+  const normalized = String(value ?? '').trim().toUpperCase();
+  if (normalized === 'HIGH') return 'HIGH';
+  if (normalized === 'LOW') return 'LOW';
+  return null;
 };
 
 export const parseCsvFile = (file: File): Promise<ParsedCsvData> => {
@@ -72,7 +117,25 @@ export const parseCsvFile = (file: File): Promise<ParsedCsvData> => {
             const close = parseFloat(row.Close);
 
             if (!isNaN(open) && !isNaN(high) && !isNaN(low) && !isNaN(close)) {
-              bars.push({ time: timestamp, open, high, low, close });
+              bars.push({
+                time: timestamp,
+                open,
+                high,
+                low,
+                close,
+                xlColor: row.XL_Color?.trim() || undefined,
+                ttwUpper: parseOptionalNumber(row.TTW_Upper),
+                ttwMiddle: parseOptionalNumber(row.TTW_Middle),
+                ttwLower: parseOptionalNumber(row.TTW_Lower),
+                hsHigh: parseOptionalNumber(row['HS_B0(High)']),
+                hsLow: parseOptionalNumber(row['HS_B1(Low)']),
+                hsOpen: parseOptionalNumber(row['HS_B2(Open)']),
+                hsClose: parseOptionalNumber(row['HS_B3(Close)']),
+                foxIsPivot: parseBooleanFlag(row.Fox_IsPivot),
+                foxLevel: parsePivotLevel(row.Fox_Level),
+                estIsPivot: parseBooleanFlag(row.Est_IsPivot),
+                estLevel: parsePivotLevel(row.Est_Level),
+              });
             }
           });
 

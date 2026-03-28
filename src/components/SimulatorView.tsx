@@ -76,10 +76,12 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
       finalizedAttemptRef.current = null;
       setSettlementSnapshot(null);
       brokerRef.current?.reset();
+      datafeed.resetDynamicPivots(startIdx);
       actions.initGame(startIdx);
     } else {
       finalizedAttemptRef.current = null;
       setSettlementSnapshot(null);
+      datafeed.resetDynamicPivots(datafeed.getTotalBars() - 1);
       datafeed.simulateTo(datafeed.getTotalBars() - 1);
       actions.initGame(datafeed.getTotalBars() - 1);
     }
@@ -139,6 +141,7 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
             finalizedAttemptRef.current = null;
             setSettlementSnapshot(null);
             brokerRef.current?.reset();
+            datafeed.resetDynamicPivots(startIdx);
             actions.initGame(startIdx);
             setAttemptId(a => a + 1);
           }}
