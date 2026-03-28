@@ -253,7 +253,7 @@ export class LocalCsvBroker {
       supportEditAmount: true,
       supportModifyOrderPrice: true,
       supportModifyBrackets: true,
-      supportPLUpdate: false,
+      supportPLUpdate: true,
       supportMargin: false,
       supportLeverage: false,
       supportSymbolSearch: false,
@@ -398,7 +398,7 @@ export class LocalCsvBroker {
             }
             this.host?.positionUpdate(this.toExternalPosition(this.position)!);
             this.host?.orderUpdate(order);
-            
+
             // Re-evaluate in case new bracket is triggered immediately
             const currentBar = this.datafeed.getCurrentBar();
             if (currentBar) {
