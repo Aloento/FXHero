@@ -277,7 +277,7 @@ export class LocalCsvBroker {
       supportLeverage: false,
       supportPlaceOrderPreview: false,
       supportSymbolSearch: false,
-      supportExecutions: false,
+      supportExecutions: true,
     };
 
     return {

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { IChartingLibraryWidget } from '../charting_library';
 import { useSimulator } from '../hooks/useSimulator';
-import { LocalCsvBroker, type BrokerSnapshot } from '../trading/localCsvBroker';
+import { LocalCsvBroker, type BrokerSnapshot } from '../trading/LocalCsvBroker';
 import CustomDatafeed from '../utils/datafeed';
 import AdvancedChart from './AdvancedChart';
 import GameSettlementMenu from './GameSettlementMenu';

@@ -1,5 +1,5 @@
 import React from 'react';
-import type { TradeRecord } from '../trading/localCsvBroker';
+import type { TradeRecord } from '../trading/LocalCsvBroker';
 
 interface SettlementProps {
   balance: number;
