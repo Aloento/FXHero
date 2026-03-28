@@ -32,6 +32,7 @@ const LEVERAGE = 500;
 const CONNECTION_STATUS_CONNECTED = 1;
 const ORDER_STATUS_CANCELED = 1;
 const ORDER_STATUS_FILLED = 2;
+const ORDER_STATUS_REJECTED = 5;
 const ORDER_STATUS_WORKING = 6;
 const ORDER_TYPE_LIMIT = 1;
 const ORDER_TYPE_MARKET = 2;
@@ -39,6 +40,7 @@ const ORDER_TYPE_STOP = 3;
 const SIDE_BUY = 1;
 const SIDE_SELL = -1;
 const PARENT_TYPE_POSITION = 2;
+const FINAL_ORDER_STATUSES = new Set([ORDER_STATUS_CANCELED, ORDER_STATUS_FILLED, ORDER_STATUS_REJECTED]);
 
 const FORMATTERS = {
   fixedInCurrency: 'fixedInCurrency',
@@ -147,8 +149,7 @@ export class LocalCsvBroker {
           updateTime: bar.time,
         } as PlacedOrder;
 
-        this.orderHistory.push(filledOrder);
-        this.host?.orderUpdate(filledOrder);
+        this.recordFinalOrder(filledOrder);
         this.applyFilledOrder(filledOrder, bar.time, Boolean((order as any).isClose));
       }
     }
@@ -156,9 +157,7 @@ export class LocalCsvBroker {
     if (!this.position) {
       this.floatingPnl = 0;
       this.equity = this.balance;
-      this.host?.equityUpdate(this.equity);
-      this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
-      this.emitSnapshot();
+      this.publishAccountState();
       return;
     }
 
@@ -168,14 +167,12 @@ export class LocalCsvBroker {
       return;
     }
 
+    this.position.updateTime = bar.time;
     this.floatingPnl = this.calculateFloatingPnl(this.position, bar.close);
     this.equity = this.balance + this.floatingPnl;
 
     this.publishPositionPnl();
-    this.host?.equityUpdate(this.equity);
-    this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
-    this.updateSummaryValues();
-    this.emitSnapshot();
+    this.publishAccountState();
   };
 
   public constructor(datafeed: CustomDatafeed, initialBalance = 1000) {
@@ -203,10 +200,7 @@ export class LocalCsvBroker {
 
     this.host?.ordersFullUpdate();
     this.host?.positionsFullUpdate();
-    this.host?.equityUpdate(this.equity);
-    this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
-    this.updateSummaryValues();
-    this.emitSnapshot();
+    this.publishAccountState();
   }
 
   public forceCloseAll(): void {
@@ -228,8 +222,7 @@ export class LocalCsvBroker {
         updateTime: bar.time,
       };
 
-      this.orderHistory.push(filledOrder);
-      this.host?.orderUpdate(filledOrder);
+      this.recordFinalOrder(filledOrder);
 
       this.applyFilledOrder(filledOrder, bar.time, true);
     }
@@ -416,8 +409,7 @@ export class LocalCsvBroker {
               stopLoss: this.normalizeBracketPrice(order.stopLoss),
             };
 
-            this.orderHistory.push(filledOrder);
-            this.host?.orderUpdate(filledOrder);
+            this.recordFinalOrder(filledOrder);
 
             this.applyFilledOrder(filledOrder, bar.time, Boolean((order as any).isClose));
           } else {
@@ -465,6 +457,12 @@ export class LocalCsvBroker {
               const triggeredPrice = this.getTriggeredBracketPrice(this.position, currentBar);
               if (triggeredPrice !== null) {
                 this.executeBracketClose(triggeredPrice, currentBar.time);
+              } else {
+                this.position.updateTime = currentBar.time;
+                this.floatingPnl = this.calculateFloatingPnl(this.position, currentBar.close);
+                this.equity = this.balance + this.floatingPnl;
+                this.publishPositionPnl();
+                this.publishAccountState();
               }
             }
           }
@@ -476,8 +474,7 @@ export class LocalCsvBroker {
             order.status = ORDER_STATUS_CANCELED;
             order.updateTime = Date.now();
             this.orders.splice(idx, 1);
-            this.orderHistory.push(order);
-            this.host?.orderUpdate(order);
+            this.recordFinalOrder(order);
           } else if (this.position) {
             let canceledOrder: Order | null = null;
             if (orderId === `tp_${this.position.id}`) {
@@ -493,7 +490,7 @@ export class LocalCsvBroker {
               (canceledOrder as any).status = ORDER_STATUS_CANCELED;
               (canceledOrder as any).updateTime = Date.now();
               this.host?.positionUpdate(this.toExternalPosition(this.position)!);
-              this.host?.orderUpdate(canceledOrder);
+              this.recordFinalOrder(canceledOrder);
             }
           }
         },
@@ -530,7 +527,8 @@ export class LocalCsvBroker {
           } else if (prevTp !== undefined) {
             const canceledOrder = this.createBracketOrder('tp', this.position, prevTp, ORDER_TYPE_LIMIT);
             canceledOrder.status = ORDER_STATUS_CANCELED as any;
-            this.host?.orderUpdate(canceledOrder as any);
+            canceledOrder.updateTime = Date.now();
+            this.recordFinalOrder(canceledOrder as any);
           }
 
           if (this.position.stopLoss !== undefined) {
@@ -538,7 +536,8 @@ export class LocalCsvBroker {
           } else if (prevSl !== undefined) {
             const canceledOrder = this.createBracketOrder('sl', this.position, prevSl, ORDER_TYPE_STOP);
             canceledOrder.status = ORDER_STATUS_CANCELED as any;
-            this.host?.orderUpdate(canceledOrder as any);
+            canceledOrder.updateTime = Date.now();
+            this.recordFinalOrder(canceledOrder as any);
           }
 
           const currentBar = this.datafeed.getCurrentBar();
@@ -549,15 +548,13 @@ export class LocalCsvBroker {
               return;
             }
 
+            this.position.updateTime = currentBar.time;
             this.floatingPnl = this.calculateFloatingPnl(this.position, currentBar.close);
             this.equity = this.balance + this.floatingPnl;
             this.publishPositionPnl();
-            this.host?.equityUpdate(this.equity);
-            this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
           }
 
-          this.updateSummaryValues();
-          this.emitSnapshot();
+          this.publishAccountState();
         },
         reversePosition: async (positionId: string) => {
           if (!this.position || this.position.id !== positionId) {
@@ -690,8 +687,7 @@ export class LocalCsvBroker {
       filledQty: closeQty,
       updateTime: time,
     };
-    this.orderHistory.push(filledOrder);
-    this.host?.orderUpdate(filledOrder);
+    this.recordFinalOrder(filledOrder);
 
     this.applyFilledOrder(filledOrder, time, true);
   }
@@ -734,10 +730,7 @@ export class LocalCsvBroker {
       this.equity = this.balance;
       this.host?.positionUpdate(this.toExternalPosition(this.position)!);
       this.publishPositionPnl();
-      this.host?.equityUpdate(this.equity);
-      this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
-      this.updateSummaryValues();
-      this.emitSnapshot();
+      this.publishAccountState();
 
       // Emit initial brackets
       if (this.position.takeProfit !== undefined) {
@@ -771,10 +764,7 @@ export class LocalCsvBroker {
       this.equity = this.balance + this.floatingPnl;
       this.host?.positionUpdate(this.toExternalPosition(current)!);
       this.publishPositionPnl();
-      this.host?.equityUpdate(this.equity);
-      this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
-      this.updateSummaryValues();
-      this.emitSnapshot();
+      this.publishAccountState();
 
       // Update brackets on chart
       if (current.takeProfit !== undefined) {
@@ -793,14 +783,9 @@ export class LocalCsvBroker {
     const netPnl = pnl - commission;
 
     this.balance += netPnl;
-    this.orderHistory.push({
-      ...order,
-      status: ORDER_STATUS_FILLED as never,
-      updateTime: fillTime,
-    });
 
     const trade: TradeRecord = {
-      id: current.id,
+      id: `${current.id}_${fillTime}_${this.trades.length + 1}`,
       type: current.side === SIDE_BUY ? 'LONG' : 'SHORT',
       entryTime: current.entryTime,
       entryPrice: current.avgPrice,
@@ -857,15 +842,12 @@ export class LocalCsvBroker {
     this.floatingPnl = this.position ? this.calculateFloatingPnl(this.position, fillPrice) : 0;
     this.equity = this.balance + this.floatingPnl;
     this.publishPositionPnl();
-    this.host?.equityUpdate(this.equity);
-    this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
-    this.updateSummaryValues();
-    this.emitSnapshot();
+    this.publishAccountState();
   }
 
   private getTriggeredBracketPrice(position: InternalPosition, bar: TvBar): number | null {
-    const takeProfit = position.takeProfit;
-    const stopLoss = position.stopLoss;
+    const takeProfit = this.normalizeBracketPrice(position.takeProfit);
+    const stopLoss = this.normalizeBracketPrice(position.stopLoss);
 
     if (position.side === SIDE_BUY) {
       if (takeProfit !== undefined && bar.high >= takeProfit) {
@@ -903,19 +885,33 @@ export class LocalCsvBroker {
       return undefined;
     }
 
-    let val = price;
-    if (typeof price === 'object' && price !== null) {
-      if ('price' in price) {
-        val = (price as any).price;
-      } else if ('limitPrice' in price) {
-        val = (price as any).limitPrice;
-      } else if ('stopPrice' in price) {
-        val = (price as any).stopPrice;
+    const normalized = this.extractPriceValue(price);
+    return Number.isFinite(normalized) ? normalized : undefined;
+  }
+
+  private extractPriceValue(raw: unknown): number {
+    if (typeof raw === 'number') {
+      return raw;
+    }
+
+    if (typeof raw === 'string') {
+      const normalized = raw.trim().replace(/,/g, '');
+      return Number(normalized);
+    }
+
+    if (typeof raw === 'object' && raw !== null) {
+      const obj = raw as Record<string, unknown>;
+      for (const key of ['price', 'value', 'limitPrice', 'stopPrice', 'triggerPrice']) {
+        if (key in obj) {
+          const nested = this.extractPriceValue(obj[key]);
+          if (Number.isFinite(nested)) {
+            return nested;
+          }
+        }
       }
     }
 
-    const normalized = typeof val === 'number' ? val : Number(val);
-    return Number.isFinite(normalized) ? normalized : undefined;
+    return Number.NaN;
   }
 
   private calculateCommission(qty: number): number {
@@ -994,6 +990,30 @@ export class LocalCsvBroker {
     }
     if (this.summaryMargin) {
       this.summaryMargin.setValue(this.calculateUsedMargin(), true);
+    }
+  }
+
+  private publishAccountState(): void {
+    this.host?.equityUpdate(this.equity);
+    this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
+    this.updateSummaryValues();
+    this.emitSnapshot();
+  }
+
+  private recordFinalOrder(order: Order): void {
+    const alreadyExists = this.orderHistory.some((item) => (
+      item.id === order.id
+      && item.status === order.status
+      && (item.updateTime ?? 0) === (order.updateTime ?? 0)
+    ));
+
+    if (!alreadyExists) {
+      this.orderHistory.push(order);
+    }
+
+    this.host?.orderUpdate(order);
+    if (FINAL_ORDER_STATUSES.has(order.status as number)) {
+      this.host?.ordersFullUpdate();
     }
   }
 

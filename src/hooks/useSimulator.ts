@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TvBar } from '../utils/csvParser';
 import CustomDatafeed from '../utils/datafeed';
 
@@ -30,6 +30,7 @@ export function useSimulator(datafeed: CustomDatafeed | null) {
 
         const nextIndex = tickIndexRef.current + 1;
         if (nextIndex >= df.getTotalBars()) {
+            setCurrentBar(df.getCurrentBar());
             setState(s => ({ ...s, isPlaying: false, isFinished: true }));
             return;
         }
@@ -51,12 +52,25 @@ export function useSimulator(datafeed: CustomDatafeed | null) {
         };
     }, [state.isPlaying, state.speed, advanceTick]);
 
-    const togglePlay = () => setState(s => ({ ...s, isPlaying: !s.isPlaying }));
+    const togglePlay = useCallback(() => {
+        setState(s => {
+            if (s.isFinished) {
+                return s;
+            }
+            return { ...s, isPlaying: !s.isPlaying };
+        });
+    }, []);
 
-    const setSpeed = (ms: number) => setState(s => ({ ...s, speed: ms }));
+    const setSpeed = useCallback((ms: number) => {
+        setState(s => ({ ...s, speed: ms }));
+    }, []);
 
-    const initGame = (startIndex: number) => {
+    const initGame = useCallback((startIndex: number) => {
         if (!datafeedRef.current) return;
+        if (timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+        }
         setTickIndex(startIndex);
         datafeedRef.current.simulateTo(startIndex);
         setCurrentBar(datafeedRef.current.getCurrentBar());
@@ -65,21 +79,23 @@ export function useSimulator(datafeed: CustomDatafeed | null) {
             speed: 1000,
             isFinished: false,
         });
-    };
+    }, []);
 
-    const exitGame = () => {
+    const exitGame = useCallback(() => {
         setState(s => ({ ...s, isPlaying: false, isFinished: true }));
-    };
+    }, []);
+
+    const actions = useMemo(() => ({
+        togglePlay,
+        setSpeed,
+        initGame,
+        exitGame,
+    }), [exitGame, initGame, setSpeed, togglePlay]);
 
     return {
         state,
         currentBar,
         tickIndex,
-        actions: {
-            togglePlay,
-            setSpeed,
-            initGame,
-            exitGame
-        }
+        actions,
     };
 }

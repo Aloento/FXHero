@@ -14,9 +14,10 @@ interface SimulatorViewProps {
 }
 
 const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit }) => {
-    const { state, currentBar, tickIndex, actions } = useSimulator(datafeed);
-    const [chartWidget, setChartWidget] = useState<IChartingLibraryWidget | null>(null);
+    const { state, currentBar, actions } = useSimulator(datafeed);
     const [attemptId, setAttemptId] = useState(0);
+    const [settlementReady, setSettlementReady] = useState(false);
+    const finalizedAttemptRef = useRef<number | null>(null);
 
     const brokerRef = useRef<LocalCsvBroker | null>(null);
     if (!brokerRef.current) {
@@ -50,45 +51,56 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
         };
     }, [mode]);
 
-    // 用useCallback包装onChartReady，避免不必要的重新渲染
+    const getRandomStartIndex = useCallback(() => {
+        const totalBars = datafeed.getTotalBars();
+        const minStart = Math.min(Math.floor(totalBars * 0.1) || 0, 1000);
+        const maxStart = Math.max(minStart + 1, totalBars - 1440);
+        return Math.floor(Math.random() * (maxStart - minStart) + minStart);
+    }, [datafeed]);
+
     const handleChartReady = useCallback((widget: IChartingLibraryWidget) => {
-        console.log('[SimulatorView] Chart widget is ready');
-        setChartWidget(widget);
-        // 这里强制图表到达最新位置
         setTimeout(() => {
             try {
-                widget.chart().executeActionById("timeScaleReset");
-                console.log('[SimulatorView] Time scale reset executed');
+                widget.chart().executeActionById('timeScaleReset');
             } catch (e) {
                 console.warn('Error executing time scale reset:', e);
             }
         }, 500);
     }, []);
 
-    // 初始化模式
     useEffect(() => {
         if (mode === 'game') {
-            const totalBars = datafeed.getTotalBars();
-            // 随机选择起点，留出足够后市（如一天1M数据=1440根K线）与前市（为了均线等指标预热）
-            const minStart = Math.min(Math.floor(totalBars * 0.1) || 0, 1000);
-            const maxStart = Math.max(minStart + 1, totalBars - 1440);
-            const startIdx = Math.floor(Math.random() * (maxStart - minStart) + minStart);
+            const startIdx = getRandomStartIndex();
 
+            finalizedAttemptRef.current = null;
+            setSettlementReady(false);
             brokerRef.current?.reset();
             actions.initGame(startIdx);
         } else {
-            // 复盘模式，直接显示全部
+            finalizedAttemptRef.current = null;
+            setSettlementReady(false);
             datafeed.simulateTo(datafeed.getTotalBars() - 1);
             actions.initGame(datafeed.getTotalBars() - 1);
         }
-    }, [mode]);
+    }, [actions.initGame, datafeed, getRandomStartIndex, mode]);
 
-    // 自动平仓
     useEffect(() => {
-        if (state.isFinished && mode === 'game') {
-            brokerRef.current?.forceCloseAll();
+        if (mode !== 'game') {
+            return;
         }
-    }, [state.isFinished, mode]);
+
+        if (!state.isFinished) {
+            setSettlementReady(false);
+            return;
+        }
+
+        if (finalizedAttemptRef.current !== attemptId) {
+            brokerRef.current?.forceCloseAll();
+            finalizedAttemptRef.current = attemptId;
+        }
+
+        setSettlementReady(true);
+    }, [attemptId, mode, state.isFinished]);
 
     return (
         <div className="flex-1 flex flex-col w-full h-full relative">
@@ -114,17 +126,16 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
                 />
             </div>
 
-            {state.isFinished && mode === 'game' && (
+            {state.isFinished && mode === 'game' && settlementReady && (
                 <GameSettlementMenu
                     balance={brokerSnapshot.balance}
                     initialBalance={1000}
                     trades={brokerSnapshot.trades}
                     onRestart={() => {
-                        const totalBars = datafeed.getTotalBars();
-                        const minStart = Math.min(Math.floor(totalBars * 0.1) || 0, 1000);
-                        const maxStart = Math.max(minStart + 1, totalBars - 1440);
-                        const startIdx = Math.floor(Math.random() * (maxStart - minStart) + minStart);
+                        const startIdx = getRandomStartIndex();
 
+                        finalizedAttemptRef.current = null;
+                        setSettlementReady(false);
                         brokerRef.current?.reset();
                         actions.initGame(startIdx);
                         setAttemptId(a => a + 1);
