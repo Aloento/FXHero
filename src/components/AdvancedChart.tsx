@@ -28,6 +28,15 @@ type TradingViewEsmModule = {
 
 let tvEsmLoadPromise: Promise<TradingViewEsmModule> | null = null;
 
+const SESSION_EVENTS = [
+  { key: 'ASIA_OPEN', name: '亚盘', type: '开始' as const, seconds: (1 * 60 + 30) * 60, color: '#1565C0', top: true },
+  { key: 'ASIA_CLOSE', name: '亚盘', type: '结束' as const, seconds: (7 * 60) * 60, color: '#1565C0', top: false },
+  { key: 'EU_OPEN', name: '欧盘', type: '开始' as const, seconds: (8 * 60) * 60, color: '#2E7D32', top: true },
+  { key: 'EU_CLOSE', name: '欧盘', type: '结束' as const, seconds: (16 * 60 + 30) * 60, color: '#2E7D32', top: false },
+  { key: 'US_OPEN', name: '美盘', type: '开始' as const, seconds: (13 * 60 + 30) * 60, color: '#C62828', top: true },
+  { key: 'US_CLOSE', name: '美盘', type: '结束' as const, seconds: (20 * 60) * 60, color: '#C62828', top: false },
+];
+
 const loadTradingViewEsm = (): Promise<TradingViewEsmModule> => {
   if (!tvEsmLoadPromise) {
     const modulePath = '/tradingview/charting_library.esm.js';
@@ -49,7 +58,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
   const labelShapeStateRef = useRef<Map<string, {
     entityId: string | number;
     signature: string;
-    ownerStudyId: string | number;
+    ownerStudyId?: string | number;
   }>>(new Map());
   const isRenderingLabelsRef = useRef<boolean>(false);
   const needsRerenderLabelsRef = useRef<boolean>(false);
@@ -140,7 +149,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
       text: string;
       color: string;
       signature: string;
-      ownerStudyId: string | number;
+      ownerStudyId?: string | number;
     }>();
 
     const offset = Math.max(datafeed.getMinMove() * 8, datafeed.getMinMove());
@@ -180,6 +189,46 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
       });
     }
 
+    const daySec = 24 * 60 * 60;
+    const fromDay = Math.floor(visibleFrom / daySec) - 1;
+    const toDay = Math.floor(visibleTo / daySec) + 1;
+    const sessionOffset = Math.max(datafeed.getMinMove() * 40, datafeed.getMinMove() * 16);
+    const sessionOwnerStudyId = foxStudyIdRef.current ?? estStudyIdRef.current;
+
+    for (let day = fromDay; day <= toDay; day++) {
+      const dayStartSec = day * daySec;
+      for (const event of SESSION_EVENTS) {
+        const eventSec = dayStartSec + event.seconds;
+        if (eventSec < visibleFrom || eventSec > visibleTo) {
+          continue;
+        }
+
+        const bar = datafeed.getBarByUnixTime(eventSec);
+        if (!bar) {
+          continue;
+        }
+
+        const pointPrice = event.top
+          ? bar.high + sessionOffset
+          : bar.low - sessionOffset;
+        const pointTime = datafeed.toChartUnixSeconds(bar.time);
+        const labelId = `SESSION_${event.key}_${pointTime}`;
+        const text = `>>> ${event.name}${event.type} <<<`;
+        const signature = `${pointTime}|${pointPrice}|${text}|${event.color}|${sessionOwnerStudyId ?? 'none'}`;
+
+        desiredById.set(labelId, {
+          point: {
+            time: pointTime,
+            price: pointPrice,
+          },
+          text,
+          color: event.color,
+          signature,
+          ownerStudyId: sessionOwnerStudyId ?? undefined,
+        });
+      }
+    }
+
     for (const [labelId, state] of labelShapeStateRef.current.entries()) {
       const next = desiredById.get(labelId);
       const shouldRecreate = !next || next.signature !== state.signature || next.ownerStudyId !== state.ownerStudyId;
@@ -208,23 +257,24 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
         return;
       }
 
-      const shapeId = await chart.createShape(
-        desired.point as any,
-        {
-          shape: 'text',
-          text: desired.text,
-          lock: true,
-          disableSelection: true,
-          disableSave: true,
-          disableUndo: true,
-          ownerStudyId: desired.ownerStudyId as any,
-          showInObjectsTree: false,
-          zOrder: 'top',
-          overrides: {
-            color: desired.color,
-          } as any,
-        }
-      );
+      const shapeOptions: any = {
+        shape: 'text',
+        text: desired.text,
+        lock: true,
+        disableSelection: true,
+        disableSave: true,
+        disableUndo: true,
+        showInObjectsTree: false,
+        zOrder: 'top',
+        overrides: {
+          color: desired.color,
+        } as any,
+      };
+      if (desired.ownerStudyId != null) {
+        shapeOptions.ownerStudyId = desired.ownerStudyId as any;
+      }
+
+      const shapeId = await chart.createShape(desired.point as any, shapeOptions);
 
       labelShapeStateRef.current.set(labelId, {
         entityId: shapeId as any,
