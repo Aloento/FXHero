@@ -157,15 +157,14 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
 
       const pointTime = label.time < 1e12 ? label.time : Math.floor(label.time / 1000);
       const pointPrice = label.price + finalOffset;
-      const text = `${label.isTop ? '▼' : '▲'} ${label.text}`;
-      const signature = `${pointTime}|${pointPrice}|${text}|${label.color}|${ownerStudyId}`;
+      const signature = `${pointTime}|${pointPrice}|${label.text}|${label.color}|${ownerStudyId}`;
 
       desiredById.set(label.id, {
         point: {
           time: pointTime,
           price: pointPrice,
         },
-        text,
+        text: label.text,
         color: label.color,
         signature,
         ownerStudyId,
