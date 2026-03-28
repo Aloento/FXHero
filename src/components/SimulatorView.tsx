@@ -17,6 +17,7 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
     const { state, currentBar, actions } = useSimulator(datafeed);
     const [attemptId, setAttemptId] = useState(0);
     const finalizedAttemptRef = useRef<number | null>(null);
+    const [settlementSnapshot, setSettlementSnapshot] = useState<BrokerSnapshot | null>(null);
 
     const brokerRef = useRef<LocalCsvBroker | null>(null);
     if (!brokerRef.current) {
@@ -72,10 +73,12 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
             const startIdx = getRandomStartIndex();
 
             finalizedAttemptRef.current = null;
+            setSettlementSnapshot(null);
             brokerRef.current?.reset();
             actions.initGame(startIdx);
         } else {
             finalizedAttemptRef.current = null;
+            setSettlementSnapshot(null);
             datafeed.simulateTo(datafeed.getTotalBars() - 1);
             actions.initGame(datafeed.getTotalBars() - 1);
         }
@@ -92,9 +95,12 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
 
         if (finalizedAttemptRef.current !== attemptId) {
             brokerRef.current?.forceCloseAll();
+            setSettlementSnapshot(brokerRef.current?.getSnapshot() ?? null);
             finalizedAttemptRef.current = attemptId;
         }
     }, [attemptId, mode, state.isFinished]);
+
+    const displaySnapshot = settlementSnapshot ?? brokerSnapshot;
 
     return (
         <div className="flex-1 flex flex-col w-full h-full relative">
@@ -106,6 +112,7 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
                     onSetSpeed={actions.setSpeed}
                     onStop={() => {
                         brokerRef.current?.forceCloseAll();
+                        setSettlementSnapshot(brokerRef.current?.getSnapshot() ?? null);
                         actions.exitGame();
                     }}
                 />
@@ -122,13 +129,14 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
 
             {state.isFinished && mode === 'game' && (
                 <GameSettlementMenu
-                    balance={brokerSnapshot.balance}
+                    balance={displaySnapshot.balance}
                     initialBalance={1000}
-                    trades={brokerSnapshot.trades}
+                    trades={displaySnapshot.trades}
                     onRestart={() => {
                         const startIdx = getRandomStartIndex();
 
                         finalizedAttemptRef.current = null;
+                        setSettlementSnapshot(null);
                         brokerRef.current?.reset();
                         actions.initGame(startIdx);
                         setAttemptId(a => a + 1);

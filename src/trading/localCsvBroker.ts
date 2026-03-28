@@ -106,8 +106,12 @@ export class LocalCsvBroker {
   private summaryMargin: any;
 
   private listeners = new Set<(snapshot: BrokerSnapshot) => void>();
+  private lastBar: TvBar | null = null;
+  private realtimeSymbols = new Set<string>();
 
   private readonly onSimulationBar = (bar: TvBar) => {
+    this.lastBar = bar;
+
     // Keep order ticket quotes in sync with the simulated market.
     this.pushRealtimeQuote(bar);
 
@@ -185,6 +189,7 @@ export class LocalCsvBroker {
 
   public dispose(): void {
     this.datafeed.unsubscribeSimulation(this.onSimulationBar);
+    this.realtimeSymbols.clear();
   }
 
   public reset(): void {
@@ -194,9 +199,11 @@ export class LocalCsvBroker {
     this.orderHistory = [];
     this.executions = [];
     this.trades = [];
+    this.realtimeSymbols.clear();
     this.balance = this.initialBalance;
     this.equity = this.initialBalance;
     this.floatingPnl = 0;
+    this.lastBar = this.datafeed.getCurrentBar();
 
     this.host?.ordersFullUpdate();
     this.host?.positionsFullUpdate();
@@ -225,7 +232,10 @@ export class LocalCsvBroker {
       this.recordFinalOrder(filledOrder);
 
       this.applyFilledOrder(filledOrder, bar.time, true);
+      return;
     }
+
+    this.publishAccountState();
   }
 
   public subscribeSnapshot(listener: (snapshot: BrokerSnapshot) => void): () => void {
@@ -262,7 +272,7 @@ export class LocalCsvBroker {
       supportEditAmount: true,
       supportModifyOrderPrice: true,
       supportModifyBrackets: true,
-      supportPLUpdate: true,
+      supportPLUpdate: false,
       supportMargin: true,
       supportLeverage: true,
       supportPlaceOrderPreview: true,
@@ -279,6 +289,12 @@ export class LocalCsvBroker {
     return (host: IBrokerConnectionAdapterHost) => {
       const safeHost = host ?? null;
       this.host = safeHost;
+
+      // TradingView may call brokerFactory before internal update hooks are wired.
+      // Defer initial synchronization to avoid hitting undefined callbacks.
+      setTimeout(() => {
+        this.syncHostState();
+      }, 0);
 
 
       const brokerImpl = {
@@ -315,7 +331,7 @@ export class LocalCsvBroker {
           }
           return allOrders;
         },
-        ordersHistory: async () => [...this.orderHistory],
+        ordersHistory: async () => this.getOrderHistorySnapshot(),
         positions: async () => {
           const pos = this.toExternalPosition(this.position);
           return pos ? [pos] : [];
@@ -442,10 +458,12 @@ export class LocalCsvBroker {
           } else if (this.position && order.parentId === this.position.id) {
             // Modify position brackets
             if (order.id.startsWith('tp_')) {
-              this.position.takeProfit = this.normalizeBracketPrice(order.limitPrice);
+              const nextTakeProfit = this.resolveTakeProfitFromOrder(order);
+              this.position.takeProfit = nextTakeProfit;
               this.position.updateTime = Date.now();
             } else if (order.id.startsWith('sl_')) {
-              this.position.stopLoss = this.normalizeBracketPrice(order.stopPrice);
+              const nextStopLoss = this.resolveStopLossFromOrder(order);
+              this.position.stopLoss = nextStopLoss;
               this.position.updateTime = Date.now();
             }
             this.host?.positionUpdate(this.toExternalPosition(this.position)!);
@@ -477,11 +495,11 @@ export class LocalCsvBroker {
             this.recordFinalOrder(order);
           } else if (this.position) {
             let canceledOrder: Order | null = null;
-            if (orderId === `tp_${this.position.id}`) {
+            if (orderId === `tp_${this.position.id}` && this.position.takeProfit !== undefined) {
               canceledOrder = this.createBracketOrder('tp', this.position, this.position.takeProfit!, ORDER_TYPE_LIMIT);
               this.position.takeProfit = undefined;
               this.position.updateTime = Date.now();
-            } else if (orderId === `sl_${this.position.id}`) {
+            } else if (orderId === `sl_${this.position.id}` && this.position.stopLoss !== undefined) {
               canceledOrder = this.createBracketOrder('sl', this.position, this.position.stopLoss!, ORDER_TYPE_STOP);
               this.position.stopLoss = undefined;
               this.position.updateTime = Date.now();
@@ -574,14 +592,20 @@ export class LocalCsvBroker {
         },
         unsubscribeEquity: () => undefined,
         subscribeMarginAvailable: (symbol: string) => {
+          this.realtimeSymbols.add(symbol);
           this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
           this.pushRealtimeQuote(this.datafeed.getCurrentBar(), symbol);
         },
-        unsubscribeMarginAvailable: (_symbol: string) => undefined,
+        unsubscribeMarginAvailable: (symbol: string) => {
+          this.realtimeSymbols.delete(symbol);
+        },
         subscribeRealtime: (symbol: string) => {
+          this.realtimeSymbols.add(symbol);
           this.pushRealtimeQuote(this.datafeed.getCurrentBar(), symbol);
         },
-        unsubscribeRealtime: () => undefined,
+        unsubscribeRealtime: () => {
+          this.realtimeSymbols.clear();
+        },
       };
 
       return brokerImpl as unknown as IBrokerTerminal;
@@ -640,8 +664,10 @@ export class LocalCsvBroker {
         { id: 'id', label: 'ID', dataFields: ['id'], formatter: FORMATTERS.text as any },
         { id: 'symbol', label: 'Symbol', dataFields: ['symbol'], formatter: FORMATTERS.symbol as any },
         { id: 'side', label: 'Side', dataFields: ['side'], formatter: FORMATTERS.side as any },
+        { id: 'avgPrice', label: 'Price', dataFields: ['avgPrice'], formatter: FORMATTERS.formatPrice as any },
         { id: 'qty', label: 'Qty', dataFields: ['qty'], formatter: FORMATTERS.formatQuantity as any },
         { id: 'status', label: 'Status', dataFields: ['status'], formatter: FORMATTERS.status as any },
+        { id: 'updateTime', label: 'Time', dataFields: ['updateTime'], formatter: FORMATTERS.text as any },
       ] as any,
       pages: [],
     };
@@ -848,22 +874,35 @@ export class LocalCsvBroker {
   private getTriggeredBracketPrice(position: InternalPosition, bar: TvBar): number | null {
     const takeProfit = this.normalizeBracketPrice(position.takeProfit);
     const stopLoss = this.normalizeBracketPrice(position.stopLoss);
+    const epsilon = this.getPriceEpsilon();
 
     if (position.side === SIDE_BUY) {
-      if (takeProfit !== undefined && bar.high >= takeProfit) {
-        return takeProfit;
+      const tpHit = takeProfit !== undefined && bar.high + epsilon >= takeProfit;
+      const slHit = stopLoss !== undefined && bar.low - epsilon <= stopLoss;
+
+      if (tpHit && slHit) {
+        return this.pickBracketPriceForDualHit(position.side, bar.open, takeProfit!, stopLoss!);
       }
-      if (stopLoss !== undefined && bar.low <= stopLoss) {
-        return stopLoss;
+      if (tpHit) {
+        return takeProfit!;
+      }
+      if (slHit) {
+        return stopLoss!;
       }
       return null;
     }
 
-    if (takeProfit !== undefined && bar.low <= takeProfit) {
-      return takeProfit;
+    const tpHit = takeProfit !== undefined && bar.low - epsilon <= takeProfit;
+    const slHit = stopLoss !== undefined && bar.high + epsilon >= stopLoss;
+
+    if (tpHit && slHit) {
+      return this.pickBracketPriceForDualHit(position.side, bar.open, takeProfit!, stopLoss!);
     }
-    if (stopLoss !== undefined && bar.high >= stopLoss) {
-      return stopLoss;
+    if (tpHit) {
+      return takeProfit!;
+    }
+    if (slHit) {
+      return stopLoss!;
     }
     return null;
   }
@@ -873,11 +912,47 @@ export class LocalCsvBroker {
       return;
     }
 
-    this.host?.plUpdate(this.position.id, this.floatingPnl);
-    this.host?.positionPartialUpdate(this.position.id, {
+    this.safeHostCall(() => this.host?.plUpdate(this.position.id, this.floatingPnl));
+    this.safeHostCall(() => this.host?.positionUpdate(this.toExternalPosition(this.position)!));
+    this.safeHostCall(() => this.host?.positionPartialUpdate(this.position.id, {
       pl: this.floatingPnl,
       updateTime: this.position.updateTime,
-    } as Partial<Position>);
+    } as Partial<Position>));
+  }
+
+  private getPriceEpsilon(): number {
+    // Keep a tiny tolerance to avoid floating-point misses around TP/SL boundaries.
+    return 1e-10;
+  }
+
+  private pickBracketPriceForDualHit(side: number, open: number, takeProfit: number, stopLoss: number): number {
+    if (side === SIDE_BUY) {
+      if (open <= stopLoss) return stopLoss;
+      if (open >= takeProfit) return takeProfit;
+      return stopLoss;
+    }
+
+    if (open >= stopLoss) return stopLoss;
+    if (open <= takeProfit) return takeProfit;
+    return stopLoss;
+  }
+
+  private resolveTakeProfitFromOrder(order: Order): number | undefined {
+    const takeProfit = (order as any).takeProfit;
+    const fromLimit = this.normalizeBracketPrice((order as any).limitPrice);
+    if (fromLimit !== undefined) {
+      return fromLimit;
+    }
+    return this.normalizeBracketPrice(takeProfit);
+  }
+
+  private resolveStopLossFromOrder(order: Order): number | undefined {
+    const stopLoss = (order as any).stopLoss;
+    const fromStop = this.normalizeBracketPrice((order as any).stopPrice);
+    if (fromStop !== undefined) {
+      return fromStop;
+    }
+    return this.normalizeBracketPrice(stopLoss);
   }
 
   private normalizeBracketPrice(price: unknown): number | undefined {
@@ -941,16 +1016,27 @@ export class LocalCsvBroker {
       return;
     }
 
-    const quoteSymbol = symbol ?? this.position?.symbol ?? this.orders[0]?.symbol ?? SYMBOL;
-    this.host.realtimeUpdate(quoteSymbol, {
-      trade: bar.close,
-      bid: bar.close,
-      ask: bar.close,
-      spread: 0,
-      bid_size: 1,
-      ask_size: 1,
-      size: 1,
-    } as any);
+    const symbols = new Set<string>();
+    symbols.add(symbol ?? this.position?.symbol ?? this.orders[0]?.symbol ?? SYMBOL);
+    this.realtimeSymbols.forEach((subscribed) => symbols.add(subscribed));
+
+    symbols.forEach((quoteSymbol) => {
+      this.host?.realtimeUpdate(quoteSymbol, {
+        trade: bar.close,
+        bid: bar.close,
+        ask: bar.close,
+        spread: 0,
+        bid_size: 1,
+        ask_size: 1,
+        size: 1,
+      } as any);
+    });
+  }
+
+  private getOrderHistorySnapshot(): Order[] {
+    return [...this.orderHistory]
+      .filter((order) => FINAL_ORDER_STATUSES.has(order.status as number))
+      .sort((a, b) => (b.updateTime ?? 0) - (a.updateTime ?? 0));
   }
 
   private executionsForSymbol(symbol: string): Execution[] {
@@ -994,26 +1080,62 @@ export class LocalCsvBroker {
   }
 
   private publishAccountState(): void {
-    this.host?.equityUpdate(this.equity);
-    this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
+    this.safeHostCall(() => this.host?.equityUpdate(this.equity));
+    this.safeHostCall(() => this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin()));
     this.updateSummaryValues();
     this.emitSnapshot();
   }
 
+  private safeHostCall(action: () => void): void {
+    try {
+      action();
+    } catch (error) {
+      console.warn('Broker host call failed during lifecycle transition:', error);
+    }
+  }
+
+  private syncHostState(): void {
+    if (!this.host) {
+      return;
+    }
+
+    this.safeHostCall(() => this.host?.ordersFullUpdate());
+    this.safeHostCall(() => this.host?.positionsFullUpdate());
+
+    if (this.position) {
+      this.safeHostCall(() => this.host?.positionUpdate(this.toExternalPosition(this.position)!));
+      this.publishPositionPnl();
+      if (this.position.takeProfit !== undefined) {
+        this.safeHostCall(() => this.host?.orderUpdate(this.createBracketOrder('tp', this.position, this.position.takeProfit, ORDER_TYPE_LIMIT) as any));
+      }
+      if (this.position.stopLoss !== undefined) {
+        this.safeHostCall(() => this.host?.orderUpdate(this.createBracketOrder('sl', this.position, this.position.stopLoss, ORDER_TYPE_STOP) as any));
+      }
+    }
+
+    this.pushRealtimeQuote(this.lastBar ?? this.datafeed.getCurrentBar());
+    this.publishAccountState();
+  }
+
   private recordFinalOrder(order: Order): void {
+    const normalizedOrder: Order = {
+      ...(order as any),
+      updateTime: order.updateTime ?? this.lastBar?.time ?? Date.now(),
+    } as Order;
+
     const alreadyExists = this.orderHistory.some((item) => (
       item.id === order.id
       && item.status === order.status
-      && (item.updateTime ?? 0) === (order.updateTime ?? 0)
+      && (item.updateTime ?? 0) === (normalizedOrder.updateTime ?? 0)
     ));
 
     if (!alreadyExists) {
-      this.orderHistory.push(order);
+      this.orderHistory.push(normalizedOrder);
     }
 
-    this.host?.orderUpdate(order);
-    if (FINAL_ORDER_STATUSES.has(order.status as number)) {
-      this.host?.ordersFullUpdate();
+    this.safeHostCall(() => this.host?.orderUpdate(normalizedOrder));
+    if (FINAL_ORDER_STATUSES.has(normalizedOrder.status as number)) {
+      this.safeHostCall(() => this.host?.ordersFullUpdate());
     }
   }
 
