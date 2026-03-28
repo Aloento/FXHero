@@ -5,7 +5,13 @@ import type {
   IBrokerConnectionAdapterHost,
   IBrokerTerminal,
   InstrumentInfo,
+  LeverageInfo,
+  LeverageInfoParams,
+  LeveragePreviewResult,
+  LeverageSetParams,
+  LeverageSetResult,
   Order,
+  OrderPreviewResult,
   PlaceOrderResult,
   PlacedOrder,
   Position,
@@ -93,10 +99,14 @@ export class LocalCsvBroker {
 
   private summaryBalance: any;
   private summaryEquity: any;
+  private summaryMargin: any;
 
   private listeners = new Set<(snapshot: BrokerSnapshot) => void>();
 
   private readonly onSimulationBar = (bar: TvBar) => {
+    // Provide real-time quote updates
+    this.host?.realtimeUpdate(SYMBOL, { ask: bar.close, bid: bar.close } as any);
+
     // Process pending limit/stop orders
     const pendingOrders = [...this.orders];
     for (const order of pendingOrders) {
@@ -145,7 +155,7 @@ export class LocalCsvBroker {
       this.floatingPnl = 0;
       this.equity = this.balance;
       this.host?.equityUpdate(this.equity);
-      this.host?.marginAvailableUpdate(this.equity);
+      this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
       this.emitSnapshot();
       return;
     }
@@ -161,7 +171,7 @@ export class LocalCsvBroker {
 
     this.publishPositionPnl();
     this.host?.equityUpdate(this.equity);
-    this.host?.marginAvailableUpdate(this.equity);
+    this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
     this.updateSummaryValues();
     this.emitSnapshot();
   };
@@ -191,7 +201,7 @@ export class LocalCsvBroker {
     this.host?.ordersFullUpdate();
     this.host?.positionsFullUpdate();
     this.host?.equityUpdate(this.equity);
-    this.host?.marginAvailableUpdate(this.equity);
+    this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
     this.updateSummaryValues();
     this.emitSnapshot();
   }
@@ -259,6 +269,7 @@ export class LocalCsvBroker {
       supportPLUpdate: true,
       supportMargin: true,
       supportLeverage: true,
+      supportPlaceOrderPreview: true,
       supportSymbolSearch: false,
       supportExecutions: false,
     };
@@ -282,6 +293,19 @@ export class LocalCsvBroker {
           return this.host.defaultContextMenuActions(_context as never, options as never);
         },
         isTradable: async (_symbol: string) => true,
+        leverageInfo: async (leverageInfoParams: LeverageInfoParams): Promise<LeverageInfo> => ({
+          title: 'Leverage',
+          leverage: LEVERAGE,
+          min: 1,
+          max: 500,
+          step: 1,
+        }),
+        setLeverage: async (leverageSetParams: LeverageSetParams): Promise<LeverageSetResult> => {
+          return { leverage: leverageSetParams.leverage };
+        },
+        previewLeverage: async (leverageSetParams: LeverageSetParams): Promise<LeveragePreviewResult> => {
+          return { infos: [`Set leverage to ${leverageSetParams.leverage}x`] };
+        },
         connectionStatus: () => CONNECTION_STATUS_CONNECTED,
         orders: async () => {
           const allOrders = [...this.orders];
@@ -325,6 +349,33 @@ export class LocalCsvBroker {
           currency: 'USD',
         }],
         currentAccount: () => ACCOUNT_ID,
+        previewOrder: async (order: PreOrder): Promise<OrderPreviewResult> => {
+          const bar = this.datafeed.getCurrentBar();
+          const price = order.type === ORDER_TYPE_MARKET ? (bar?.close || 0) : (order.limitPrice ?? order.stopPrice ?? bar?.close ?? 0);
+          const requiredMargin = (order.qty * CONTRACT_SIZE * price) / LEVERAGE;
+          const currentAvailable = this.equity - this.calculateUsedMargin();
+          const commission = this.calculateCommission(order.qty);
+
+          const result: OrderPreviewResult = {
+            sections: [
+              {
+                header: 'Margin & Fees Check',
+                rows: [
+                  { title: 'Required Margin', value: `$${requiredMargin.toFixed(2)}` },
+                  { title: 'Available Margin', value: `$${currentAvailable.toFixed(2)}` },
+                  { title: 'Commission', value: `$${commission.toFixed(2)}` },
+                ],
+              },
+            ],
+            errors: [],
+          };
+
+          if (requiredMargin > currentAvailable) {
+            result.errors?.push(`Insufficient margin. Required: $${requiredMargin.toFixed(2)}, Available: $${currentAvailable.toFixed(2)}`);
+          }
+
+          return result;
+        },
         placeOrder: async (order: PreOrder): Promise<PlaceOrderResult> => {
           const bar = this.datafeed.getCurrentBar();
           if (!bar) {
@@ -335,7 +386,8 @@ export class LocalCsvBroker {
             // Margin check
             const price = order.type === ORDER_TYPE_MARKET ? bar.close : (order.limitPrice ?? order.stopPrice ?? bar.close);
             const requiredMargin = (order.qty * CONTRACT_SIZE * price) / LEVERAGE;
-            if (requiredMargin > this.equity) {
+            const currentAvailable = this.equity - this.calculateUsedMargin();
+            if (requiredMargin > currentAvailable) {
               return Promise.reject(new Error(`可用资金不足。开仓所需保证金: $${requiredMargin.toFixed(2)} (500x杠杆)`));
             }
           }
@@ -496,7 +548,7 @@ export class LocalCsvBroker {
             this.equity = this.balance + this.floatingPnl;
             this.publishPositionPnl();
             this.host?.equityUpdate(this.equity);
-            this.host?.marginAvailableUpdate(this.equity);
+            this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
           }
 
           this.updateSummaryValues();
@@ -519,7 +571,7 @@ export class LocalCsvBroker {
         },
         unsubscribeEquity: () => undefined,
         subscribeMarginAvailable: () => {
-          this.host?.marginAvailableUpdate(this.equity);
+          this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
         },
         unsubscribeMarginAvailable: () => undefined,
         subscribeRealtime: () => undefined,
@@ -537,9 +589,13 @@ export class LocalCsvBroker {
     if (!this.summaryEquity && this.host?.factory?.createWatchedValue) {
       this.summaryEquity = this.host.factory.createWatchedValue(this.equity);
     }
+    if (!this.summaryMargin && this.host?.factory?.createWatchedValue) {
+      this.summaryMargin = this.host.factory.createWatchedValue(this.calculateUsedMargin());
+    }
 
     return {
       accountTitle: ACCOUNT_TITLE,
+      marginUsed: this.summaryMargin,
       summary: [
         {
           text: 'Balance',
@@ -553,6 +609,12 @@ export class LocalCsvBroker {
           formatter: FORMATTERS.fixedInCurrency as any,
           isDefault: true,
         },
+        {
+          text: 'Margin Used',
+          wValue: this.summaryMargin,
+          formatter: FORMATTERS.fixedInCurrency as any,
+          isDefault: true,
+        }
       ],
       orderColumns: [
         { id: 'id', label: 'ID', dataFields: ['id'], formatter: FORMATTERS.text as any },
@@ -662,7 +724,7 @@ export class LocalCsvBroker {
       this.host?.positionUpdate(this.toExternalPosition(this.position)!);
       this.publishPositionPnl();
       this.host?.equityUpdate(this.equity);
-      this.host?.marginAvailableUpdate(this.equity);
+      this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
       this.updateSummaryValues();
       this.emitSnapshot();
 
@@ -699,7 +761,7 @@ export class LocalCsvBroker {
       this.host?.positionUpdate(this.toExternalPosition(current)!);
       this.publishPositionPnl();
       this.host?.equityUpdate(this.equity);
-      this.host?.marginAvailableUpdate(this.equity);
+      this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
       this.updateSummaryValues();
       this.emitSnapshot();
 
@@ -785,7 +847,7 @@ export class LocalCsvBroker {
     this.equity = this.balance + this.floatingPnl;
     this.publishPositionPnl();
     this.host?.equityUpdate(this.equity);
-    this.host?.marginAvailableUpdate(this.equity);
+    this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
     this.updateSummaryValues();
     this.emitSnapshot();
   }
@@ -861,12 +923,21 @@ export class LocalCsvBroker {
     return signedDiff * CONTRACT_SIZE * qty;
   }
 
+  private calculateUsedMargin(): number {
+    if (!this.position) return 0;
+    // Calculation: Math.abs(qty * avgPrice * CONTRACT_SIZE) / LEVERAGE
+    return Math.abs(this.position.qty * this.position.avgPrice * CONTRACT_SIZE) / LEVERAGE;
+  }
+
   private updateSummaryValues(): void {
     if (this.summaryBalance) {
       this.summaryBalance.setValue(this.balance, true);
     }
     if (this.summaryEquity) {
       this.summaryEquity.setValue(this.equity, true);
+    }
+    if (this.summaryMargin) {
+      this.summaryMargin.setValue(this.calculateUsedMargin(), true);
     }
   }
 
