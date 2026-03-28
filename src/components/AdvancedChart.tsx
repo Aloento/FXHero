@@ -29,7 +29,11 @@ let tvEsmLoadPromise: Promise<TradingViewEsmModule> | null = null;
 const loadTradingViewEsm = (): Promise<TradingViewEsmModule> => {
   if (!tvEsmLoadPromise) {
     const modulePath = '/tradingview/charting_library.esm.js';
-    tvEsmLoadPromise = import(/* @vite-ignore */ modulePath) as Promise<TradingViewEsmModule>;
+    tvEsmLoadPromise = (import(/* @vite-ignore */ modulePath) as Promise<TradingViewEsmModule>).catch((error) => {
+      // Reset cache when loading fails so subsequent attempts can recover.
+      tvEsmLoadPromise = null;
+      throw error;
+    });
   }
 
   return tvEsmLoadPromise;
@@ -48,6 +52,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
 
   useEffect(() => {
     let isMounted = true;
+    let initRetry = 0;
 
     const initWidget = async () => {
       try {
@@ -107,6 +112,12 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
         });
       } catch (err) {
         console.error('Failed to load TradingView charting library:', err);
+        if (isMounted && initRetry < 1) {
+          initRetry += 1;
+          setTimeout(() => {
+            void initWidget();
+          }, 120);
+        }
       }
     };
 

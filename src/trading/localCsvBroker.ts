@@ -296,7 +296,6 @@ export class LocalCsvBroker {
         this.syncHostState();
       }, 0);
 
-
       const brokerImpl = {
         chartContextMenuActions: async (_context: unknown, options?: unknown) => {
           if (!this.host) {
