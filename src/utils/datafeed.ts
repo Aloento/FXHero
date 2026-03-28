@@ -221,8 +221,26 @@ class CustomDatafeed implements IExternalDatafeed, IDatafeedChartApi, IDatafeedQ
   }
 
   private normalizeTs(ts: number): number {
-    // PineJS time can be in seconds, while our bars are milliseconds.
-    return ts < 1e12 ? ts * 1000 : ts;
+    // Robustly normalize unix seconds/milliseconds by matching known bar timestamps first.
+    if (this.barIndexByTime.has(ts)) {
+      return ts;
+    }
+
+    const asMs = ts * 1000;
+    if (this.barIndexByTime.has(asMs)) {
+      return asMs;
+    }
+
+    // Fallback: choose whichever scale is closer to the current simulated bar time.
+    const currentBarTime = this.bars[this.currentTickIndex]?.time ?? 0;
+    const rawDistance = Math.abs(ts - currentBarTime);
+    const msDistance = Math.abs(asMs - currentBarTime);
+    return msDistance < rawDistance ? asMs : ts;
+  }
+
+  public toChartUnixSeconds(ts: number): number {
+    const normalized = this.normalizeTs(ts);
+    return Math.floor(normalized / 1000);
   }
 
   public getBarByUnixTime(ts: number): TvBar | null {

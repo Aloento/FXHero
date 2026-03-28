@@ -45,6 +45,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<IChartingLibraryWidget | null>(null);
   const simulationListenerRef = useRef<((bar: any) => void) | null>(null);
+  const visibleRangeListenerRef = useRef<((range: { from: number; to: number }) => void) | null>(null);
   const labelShapeStateRef = useRef<Map<string, {
     entityId: string | number;
     signature: string;
@@ -129,6 +130,11 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
       ...datafeed.getPivotLabels('EST').map((label) => ({ ...label, kind: 'EST' as const })),
     ].sort((a, b) => a.time - b.time);
 
+    const visibleRange = chart.getVisibleRange();
+    const visiblePaddingSec = 12 * 60 * 60;
+    const visibleFrom = visibleRange.from - visiblePaddingSec;
+    const visibleTo = visibleRange.to + visiblePaddingSec;
+
     const desiredById = new Map<string, {
       point: { time: number; price: number };
       text: string;
@@ -155,7 +161,10 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
       const staggerOffset = staggerIndex * datafeed.getMinMove() * 6;
       const finalOffset = sideBase * (offset + kindOffset + staggerOffset);
 
-      const pointTime = label.time < 1e12 ? label.time : Math.floor(label.time / 1000);
+      const pointTime = datafeed.toChartUnixSeconds(label.time);
+      if (pointTime < visibleFrom || pointTime > visibleTo) {
+        continue;
+      }
       const pointPrice = label.price + finalOffset;
       const signature = `${pointTime}|${pointPrice}|${label.text}|${label.color}|${ownerStudyId}`;
 
@@ -178,12 +187,16 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
         continue;
       }
 
+      let removed = false;
       try {
         chart.removeEntity(state.entityId as any, { disableUndo: true });
+        removed = true;
       } catch {
-        // ignore stale ids
+        // Keep old state when remove fails to avoid leaking duplicates by recreating on every tick.
       }
-      labelShapeStateRef.current.delete(labelId);
+      if (removed) {
+        labelShapeStateRef.current.delete(labelId);
+      }
     }
 
     for (const [labelId, desired] of desiredById.entries()) {
@@ -361,6 +374,12 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
           }
           await applyDefaultStudies(tvWidget);
           schedulePivotLabelRender(tvWidget);
+          const onVisibleRangeChanged = () => {
+            if (!isMounted) return;
+            schedulePivotLabelRender(tvWidget);
+          };
+          visibleRangeListenerRef.current = onVisibleRangeChanged;
+          tvWidget.activeChart().onVisibleRangeChanged().subscribe(null, onVisibleRangeChanged);
           const onSimulationBar = () => {
             if (!isMounted) return;
             try {
@@ -394,6 +413,10 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
           if (simulationListenerRef.current) {
             datafeed.unsubscribeSimulation(simulationListenerRef.current);
             simulationListenerRef.current = null;
+          }
+          if (visibleRangeListenerRef.current) {
+            widgetRef.current.activeChart().onVisibleRangeChanged().unsubscribe(null, visibleRangeListenerRef.current);
+            visibleRangeListenerRef.current = null;
           }
           clearPivotLabels(widgetRef.current);
           widgetRef.current.remove();
