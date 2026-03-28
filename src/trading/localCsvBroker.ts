@@ -254,8 +254,8 @@ export class LocalCsvBroker {
       supportModifyOrderPrice: true,
       supportModifyBrackets: true,
       supportPLUpdate: true,
-      supportMargin: false,
-      supportLeverage: false,
+      supportMargin: true,
+      supportLeverage: true,
       supportSymbolSearch: false,
       supportExecutions: false,
     };
