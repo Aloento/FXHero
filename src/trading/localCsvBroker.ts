@@ -145,6 +145,7 @@ export class LocalCsvBroker {
       this.floatingPnl = 0;
       this.equity = this.balance;
       this.host?.equityUpdate(this.equity);
+      this.host?.marginAvailableUpdate(this.equity);
       this.emitSnapshot();
       return;
     }
@@ -160,6 +161,7 @@ export class LocalCsvBroker {
 
     this.publishPositionPnl();
     this.host?.equityUpdate(this.equity);
+    this.host?.marginAvailableUpdate(this.equity);
     this.updateSummaryValues();
     this.emitSnapshot();
   };
@@ -189,6 +191,7 @@ export class LocalCsvBroker {
     this.host?.ordersFullUpdate();
     this.host?.positionsFullUpdate();
     this.host?.equityUpdate(this.equity);
+    this.host?.marginAvailableUpdate(this.equity);
     this.updateSummaryValues();
     this.emitSnapshot();
   }
@@ -493,6 +496,7 @@ export class LocalCsvBroker {
             this.equity = this.balance + this.floatingPnl;
             this.publishPositionPnl();
             this.host?.equityUpdate(this.equity);
+            this.host?.marginAvailableUpdate(this.equity);
           }
 
           this.updateSummaryValues();
@@ -514,6 +518,12 @@ export class LocalCsvBroker {
           this.host?.equityUpdate(this.equity);
         },
         unsubscribeEquity: () => undefined,
+        subscribeMarginAvailable: () => {
+          this.host?.marginAvailableUpdate(this.equity);
+        },
+        unsubscribeMarginAvailable: () => undefined,
+        subscribeRealtime: () => undefined,
+        unsubscribeRealtime: () => undefined,
       };
 
       return brokerImpl as unknown as IBrokerTerminal;
@@ -652,6 +662,7 @@ export class LocalCsvBroker {
       this.host?.positionUpdate(this.toExternalPosition(this.position)!);
       this.publishPositionPnl();
       this.host?.equityUpdate(this.equity);
+      this.host?.marginAvailableUpdate(this.equity);
       this.updateSummaryValues();
       this.emitSnapshot();
 
@@ -688,6 +699,7 @@ export class LocalCsvBroker {
       this.host?.positionUpdate(this.toExternalPosition(current)!);
       this.publishPositionPnl();
       this.host?.equityUpdate(this.equity);
+      this.host?.marginAvailableUpdate(this.equity);
       this.updateSummaryValues();
       this.emitSnapshot();
 
@@ -773,6 +785,7 @@ export class LocalCsvBroker {
     this.equity = this.balance + this.floatingPnl;
     this.publishPositionPnl();
     this.host?.equityUpdate(this.equity);
+    this.host?.marginAvailableUpdate(this.equity);
     this.updateSummaryValues();
     this.emitSnapshot();
   }
