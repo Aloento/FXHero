@@ -111,8 +111,19 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
         <SimulatorControls
           state={state}
           currentBar={currentBar}
-          onTogglePlay={actions.togglePlay}
-          onSetSpeed={actions.setSpeed}
+          onPressPlayButton={() => {
+            if (state.isPlaying) {
+              actions.pause();
+              return;
+            }
+            actions.playAtSpeed(1000);
+          }}
+          onPressStart={() => {
+            actions.playAtSpeed(100);
+          }}
+          onPressEnd={() => {
+            actions.pause();
+          }}
           onStop={() => {
             brokerRef.current?.forceCloseAll();
             setSettlementSnapshot(brokerRef.current?.getSnapshot() ?? null);

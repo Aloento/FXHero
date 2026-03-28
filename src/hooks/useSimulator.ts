@@ -61,6 +61,28 @@ export function useSimulator(datafeed: CustomDatafeed | null) {
         });
     }, []);
 
+    const play = useCallback(() => {
+        setState(s => {
+            if (s.isFinished) {
+                return s;
+            }
+            return { ...s, isPlaying: true };
+        });
+    }, []);
+
+    const pause = useCallback(() => {
+        setState(s => ({ ...s, isPlaying: false }));
+    }, []);
+
+    const playAtSpeed = useCallback((ms: number) => {
+        setState(s => {
+            if (s.isFinished) {
+                return s;
+            }
+            return { ...s, isPlaying: true, speed: ms };
+        });
+    }, []);
+
     const setSpeed = useCallback((ms: number) => {
         setState(s => ({ ...s, speed: ms }));
     }, []);
@@ -87,10 +109,13 @@ export function useSimulator(datafeed: CustomDatafeed | null) {
 
     const actions = useMemo(() => ({
         togglePlay,
+        play,
+        pause,
+        playAtSpeed,
         setSpeed,
         initGame,
         exitGame,
-    }), [exitGame, initGame, setSpeed, togglePlay]);
+    }), [exitGame, initGame, pause, play, playAtSpeed, setSpeed, togglePlay]);
 
     return {
         state,
