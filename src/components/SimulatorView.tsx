@@ -16,7 +16,6 @@ interface SimulatorViewProps {
 const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit }) => {
     const { state, currentBar, actions } = useSimulator(datafeed);
     const [attemptId, setAttemptId] = useState(0);
-    const [settlementReady, setSettlementReady] = useState(false);
     const finalizedAttemptRef = useRef<number | null>(null);
 
     const brokerRef = useRef<LocalCsvBroker | null>(null);
@@ -73,12 +72,10 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
             const startIdx = getRandomStartIndex();
 
             finalizedAttemptRef.current = null;
-            setSettlementReady(false);
             brokerRef.current?.reset();
             actions.initGame(startIdx);
         } else {
             finalizedAttemptRef.current = null;
-            setSettlementReady(false);
             datafeed.simulateTo(datafeed.getTotalBars() - 1);
             actions.initGame(datafeed.getTotalBars() - 1);
         }
@@ -90,7 +87,6 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
         }
 
         if (!state.isFinished) {
-            setSettlementReady(false);
             return;
         }
 
@@ -98,8 +94,6 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
             brokerRef.current?.forceCloseAll();
             finalizedAttemptRef.current = attemptId;
         }
-
-        setSettlementReady(true);
     }, [attemptId, mode, state.isFinished]);
 
     return (
@@ -126,7 +120,7 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
                 />
             </div>
 
-            {state.isFinished && mode === 'game' && settlementReady && (
+            {state.isFinished && mode === 'game' && (
                 <GameSettlementMenu
                     balance={brokerSnapshot.balance}
                     initialBalance={1000}
@@ -135,7 +129,6 @@ const SimulatorView: React.FC<SimulatorViewProps> = ({ datafeed, mode, onExit })
                         const startIdx = getRandomStartIndex();
 
                         finalizedAttemptRef.current = null;
-                        setSettlementReady(false);
                         brokerRef.current?.reset();
                         actions.initGame(startIdx);
                         setAttemptId(a => a + 1);
