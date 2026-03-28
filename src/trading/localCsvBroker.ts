@@ -2,6 +2,7 @@ import type {
   AccountId,
   AccountManagerInfo,
   BrokerConfigFlags,
+  Execution,
   IBrokerConnectionAdapterHost,
   IBrokerTerminal,
   InstrumentInfo,
@@ -91,6 +92,7 @@ export class LocalCsvBroker {
   private position: InternalPosition | null = null;
   private orders: Order[] = [];
   private orderHistory: Order[] = [];
+  private executions: Execution[] = [];
   private trades: TradeRecord[] = [];
 
   private balance: number;
@@ -104,8 +106,8 @@ export class LocalCsvBroker {
   private listeners = new Set<(snapshot: BrokerSnapshot) => void>();
 
   private readonly onSimulationBar = (bar: TvBar) => {
-    // Provide real-time quote updates
-    this.host?.realtimeUpdate(SYMBOL, { ask: bar.close, bid: bar.close } as any);
+    // Keep order ticket quotes in sync with the simulated market.
+    this.pushRealtimeQuote(bar);
 
     // Process pending limit/stop orders
     const pendingOrders = [...this.orders];
@@ -193,6 +195,7 @@ export class LocalCsvBroker {
     this.position = null;
     this.orders = [];
     this.orderHistory = [];
+    this.executions = [];
     this.trades = [];
     this.balance = this.initialBalance;
     this.equity = this.initialBalance;
@@ -271,7 +274,7 @@ export class LocalCsvBroker {
       supportLeverage: true,
       supportPlaceOrderPreview: true,
       supportSymbolSearch: false,
-      supportExecutions: false,
+      supportExecutions: true,
     };
 
     return {
@@ -324,7 +327,7 @@ export class LocalCsvBroker {
           const pos = this.toExternalPosition(this.position);
           return pos ? [pos] : [];
         },
-        executions: async (_symbol: string) => [],
+        executions: async (symbol: string) => this.executionsForSymbol(symbol),
         symbolInfo: async (_symbol: string): Promise<InstrumentInfo> => ({
           qty: {
             min: 0.01,
@@ -381,6 +384,8 @@ export class LocalCsvBroker {
           if (!bar) {
             throw new Error('No current bar available for execution');
           }
+
+          this.pushRealtimeQuote(bar, order.symbol);
 
           if (!(order as any).isClose) {
             // Margin check
@@ -568,13 +573,17 @@ export class LocalCsvBroker {
         },
         subscribeEquity: () => {
           this.host?.equityUpdate(this.equity);
+          this.pushRealtimeQuote(this.datafeed.getCurrentBar());
         },
         unsubscribeEquity: () => undefined,
-        subscribeMarginAvailable: () => {
+        subscribeMarginAvailable: (symbol: string) => {
           this.host?.marginAvailableUpdate(this.equity - this.calculateUsedMargin());
+          this.pushRealtimeQuote(this.datafeed.getCurrentBar(), symbol);
         },
-        unsubscribeMarginAvailable: () => undefined,
-        subscribeRealtime: () => undefined,
+        unsubscribeMarginAvailable: (_symbol: string) => undefined,
+        subscribeRealtime: (symbol: string) => {
+          this.pushRealtimeQuote(this.datafeed.getCurrentBar(), symbol);
+        },
         unsubscribeRealtime: () => undefined,
       };
 
@@ -704,6 +713,8 @@ export class LocalCsvBroker {
   }
 
   private applyFilledOrder(order: PlacedOrder, fillTime: number, isCloseOrder: boolean): void {
+    this.recordExecution(order, fillTime);
+
     if (!this.position) {
       const commission = this.calculateCommission(order.qty);
       this.balance -= commission;
@@ -927,6 +938,51 @@ export class LocalCsvBroker {
     if (!this.position) return 0;
     // Calculation: Math.abs(qty * avgPrice * CONTRACT_SIZE) / LEVERAGE
     return Math.abs(this.position.qty * this.position.avgPrice * CONTRACT_SIZE) / LEVERAGE;
+  }
+
+  private pushRealtimeQuote(bar: TvBar | null, symbol?: string): void {
+    if (!this.host || !bar) {
+      return;
+    }
+
+    const quoteSymbol = symbol ?? this.position?.symbol ?? this.orders[0]?.symbol ?? SYMBOL;
+    this.host.realtimeUpdate(quoteSymbol, {
+      trade: bar.close,
+      bid: bar.close,
+      ask: bar.close,
+      spread: 0,
+      bid_size: 1,
+      ask_size: 1,
+      size: 1,
+    } as any);
+  }
+
+  private executionsForSymbol(symbol: string): Execution[] {
+    return this.executions.filter((execution) => this.isSymbolMatch(symbol, execution.symbol));
+  }
+
+  private isSymbolMatch(requestedSymbol: string, executionSymbol: string): boolean {
+    const requested = requestedSymbol.toUpperCase();
+    const execution = executionSymbol.toUpperCase();
+    return (
+      requested === execution ||
+      requested.endsWith(`:${execution}`) ||
+      execution.endsWith(`:${requested}`)
+    );
+  }
+
+  private recordExecution(order: PlacedOrder, fillTime: number): void {
+    const execution: Execution = {
+      symbol: order.symbol,
+      side: order.side as any,
+      qty: order.qty,
+      price: order.avgPrice ?? this.datafeed.getCurrentBar()?.close ?? 0,
+      time: fillTime,
+      commission: this.calculateCommission(order.qty),
+    };
+
+    this.executions.push(execution);
+    this.host?.executionUpdate(execution);
   }
 
   private updateSummaryValues(): void {
