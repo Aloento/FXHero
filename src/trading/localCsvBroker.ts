@@ -97,6 +97,50 @@ export class LocalCsvBroker {
   private listeners = new Set<(snapshot: BrokerSnapshot) => void>();
 
   private readonly onSimulationBar = (bar: TvBar) => {
+    // Process pending limit/stop orders
+    const pendingOrders = [...this.orders];
+    for (const order of pendingOrders) {
+      let triggered = false;
+      let fillPrice = bar.close;
+
+      if (order.type === ORDER_TYPE_LIMIT) {
+        if (order.side === SIDE_BUY && bar.low <= order.limitPrice!) {
+          triggered = true;
+          fillPrice = order.limitPrice!;
+        } else if (order.side === SIDE_SELL && bar.high >= order.limitPrice!) {
+          triggered = true;
+          fillPrice = order.limitPrice!;
+        }
+      } else if (order.type === ORDER_TYPE_STOP) {
+        if (order.side === SIDE_BUY && bar.high >= order.stopPrice!) {
+          triggered = true;
+          fillPrice = order.stopPrice!;
+        } else if (order.side === SIDE_SELL && bar.low <= order.stopPrice!) {
+          triggered = true;
+          fillPrice = order.stopPrice!;
+        }
+      }
+
+      if (triggered) {
+        const orderIdx = this.orders.findIndex(o => o.id === order.id);
+        if (orderIdx >= 0) {
+          this.orders.splice(orderIdx, 1);
+        }
+
+        const filledOrder: PlacedOrder = {
+          ...order,
+          status: ORDER_STATUS_FILLED as never,
+          avgPrice: fillPrice,
+          filledQty: order.qty,
+          updateTime: bar.time,
+        } as PlacedOrder;
+
+        this.orderHistory.push(filledOrder);
+        this.host?.orderUpdate(filledOrder);
+        this.applyFilledOrder(filledOrder, bar.time, Boolean((order as any).isClose));
+      }
+    }
+
     if (!this.position) {
       this.floatingPnl = 0;
       this.equity = this.balance;
@@ -295,33 +339,56 @@ export class LocalCsvBroker {
 
           if (!(order as any).isClose) {
             // Margin check
-            const requiredMargin = (order.qty * CONTRACT_SIZE * bar.close) / LEVERAGE;
+            const price = order.type === ORDER_TYPE_MARKET ? bar.close : (order.limitPrice ?? order.stopPrice ?? bar.close);
+            const requiredMargin = (order.qty * CONTRACT_SIZE * price) / LEVERAGE;
             if (requiredMargin > this.equity) {
               return Promise.reject(new Error(`可用资金不足。开仓所需保证金: $${requiredMargin.toFixed(2)} (500x杠杆)`));
             }
           }
 
           const orderId = this.nextId('ord');
-          const filledOrder: PlacedOrder = {
-            id: orderId,
-            symbol: order.symbol,
-            type: order.type,
-            side: order.side,
-            qty: order.qty,
-            status: ORDER_STATUS_FILLED as never,
-            avgPrice: bar.close,
-            filledQty: order.qty,
-            updateTime: bar.time,
-            limitPrice: order.limitPrice,
-            stopPrice: order.stopPrice,
-            takeProfit: this.normalizeBracketPrice(order.takeProfit),
-            stopLoss: this.normalizeBracketPrice(order.stopLoss),
-          };
 
-          this.orderHistory.push(filledOrder);
-          this.host?.orderUpdate(filledOrder);
+          if (order.type === ORDER_TYPE_MARKET || (order as any).isClose) {
+            const filledOrder: PlacedOrder = {
+              id: orderId,
+              symbol: order.symbol,
+              type: order.type,
+              side: order.side,
+              qty: order.qty,
+              status: ORDER_STATUS_FILLED as never,
+              avgPrice: bar.close,
+              filledQty: order.qty,
+              updateTime: bar.time,
+              limitPrice: order.limitPrice,
+              stopPrice: order.stopPrice,
+              takeProfit: this.normalizeBracketPrice(order.takeProfit),
+              stopLoss: this.normalizeBracketPrice(order.stopLoss),
+            };
 
-          this.applyFilledOrder(filledOrder, bar.time, Boolean(order.isClose));
+            this.orderHistory.push(filledOrder);
+            this.host?.orderUpdate(filledOrder);
+
+            this.applyFilledOrder(filledOrder, bar.time, Boolean((order as any).isClose));
+          } else {
+            const workingOrder = {
+              id: orderId,
+              symbol: order.symbol,
+              type: order.type,
+              side: order.side,
+              qty: order.qty,
+              status: ORDER_STATUS_WORKING as any,
+              updateTime: bar.time,
+              limitPrice: order.limitPrice,
+              stopPrice: order.stopPrice,
+              takeProfit: this.normalizeBracketPrice(order.takeProfit),
+              stopLoss: this.normalizeBracketPrice(order.stopLoss),
+              isClose: (order as any).isClose,
+            } as Order;
+
+            this.orders.push(workingOrder);
+            this.host?.orderUpdate(workingOrder);
+          }
+
           return { orderId };
         },
         modifyOrder: async (order: Order) => {
@@ -508,6 +575,7 @@ export class LocalCsvBroker {
       updateTime: time,
     };
     this.orderHistory.push(filledOrder);
+    this.host?.orderUpdate(filledOrder);
 
     this.applyFilledOrder(filledOrder, time, true);
   }
