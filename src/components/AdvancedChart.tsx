@@ -52,6 +52,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
   }>>(new Map());
   const isRenderingLabelsRef = useRef<boolean>(false);
   const needsRerenderLabelsRef = useRef<boolean>(false);
+  const lastPivotTailRef = useRef<{ FOX: string | null; EST: string | null }>({ FOX: null, EST: null });
   const foxStudyIdRef = useRef<string | number | null>(null);
   const estStudyIdRef = useRef<string | number | null>(null);
 
@@ -104,6 +105,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
 
     foxStudyIdRef.current = await chart.createStudy('FX FOX', true, false);
     estStudyIdRef.current = await chart.createStudy('FX EST', true, false);
+    lastPivotTailRef.current = { FOX: null, EST: null };
     chart.createStudy('FX HS Candles', true, false);
     chart.createStudy('FX TTW', true, false);
     chart.createStudy('FX XL Color K', true, false);
@@ -245,6 +247,56 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
     void run();
   }, [renderPivotLabels]);
 
+  const refreshPivotStudiesOnNewPoint = useCallback((widget: IChartingLibraryWidget) => {
+    if (widgetRef.current !== widget) {
+      return;
+    }
+
+    const foxLabels = datafeed.getPivotLabels('FOX');
+    const estLabels = datafeed.getPivotLabels('EST');
+    const foxTail = foxLabels.length > 0 ? foxLabels[foxLabels.length - 1].id : null;
+    const estTail = estLabels.length > 0 ? estLabels[estLabels.length - 1].id : null;
+
+    const prev = lastPivotTailRef.current;
+    const foxChanged = foxTail !== prev.FOX;
+    const estChanged = estTail !== prev.EST;
+
+    if (!foxChanged && !estChanged) {
+      return;
+    }
+
+    lastPivotTailRef.current = { FOX: foxTail, EST: estTail };
+
+    // First sample establishes baseline; refresh from the next new pivot onwards.
+    if (prev.FOX == null && prev.EST == null) {
+      return;
+    }
+
+    const chart = widget.activeChart();
+    const refreshStudy = (studyId: string | number | null) => {
+      if (studyId == null) {
+        return;
+      }
+      try {
+        const studyApi = chart.getStudyById(studyId as any);
+        if (!studyApi.isVisible()) {
+          return;
+        }
+        studyApi.setVisible(false);
+        studyApi.setVisible(true);
+      } catch {
+        // ignore stale study references during chart re-init
+      }
+    };
+
+    if (foxChanged) {
+      refreshStudy(foxStudyIdRef.current);
+    }
+    if (estChanged) {
+      refreshStudy(estStudyIdRef.current);
+    }
+  }, [datafeed]);
+
   useEffect(() => {
     let isMounted = true;
     let initRetry = 0;
@@ -312,7 +364,12 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
           schedulePivotLabelRender(tvWidget);
           const onSimulationBar = () => {
             if (!isMounted) return;
-            schedulePivotLabelRender(tvWidget);
+            try {
+              refreshPivotStudiesOnNewPoint(tvWidget);
+              schedulePivotLabelRender(tvWidget);
+            } catch (error) {
+              console.error('Simulation chart refresh failed:', error);
+            }
           };
           simulationListenerRef.current = onSimulationBar;
           datafeed.subscribeSimulation(onSimulationBar);
@@ -350,7 +407,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
       }
     };
     // 注意：只在datafeed改变时重新初始化，不在onChartReady改变时
-  }, [applyDefaultStudies, clearPivotLabels, datafeed, memoizedOnChartReady, schedulePivotLabelRender, trading]);
+  }, [applyDefaultStudies, clearPivotLabels, datafeed, memoizedOnChartReady, refreshPivotStudiesOnNewPoint, schedulePivotLabelRender, trading]);
 
   return <div ref={chartContainerRef} style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />;
 };

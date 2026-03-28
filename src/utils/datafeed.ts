@@ -93,7 +93,13 @@ class CustomDatafeed implements IExternalDatafeed, IDatafeedChartApi, IDatafeedQ
         this.currentTickIndex = index;
         const currentBar = this.bars[index];
         this.updateDynamicPivots(index);
-        this.simulationListeners.forEach((listener) => listener(currentBar));
+        this.simulationListeners.forEach((listener) => {
+          try {
+            listener(currentBar);
+          } catch (error) {
+            console.error('Simulation listener failed:', error);
+          }
+        });
         if (this.onRealtimeCallback) {
           this.onRealtimeCallback({
             time: currentBar.time,
