@@ -95,6 +95,8 @@ export class LocalCsvBroker {
   private orders: Order[] = [];
   private orderHistory: Order[] = [];
   private executions: Execution[] = [];
+  private executionSeq = 0;
+  private lastExecutionTime = 0;
   private trades: TradeRecord[] = [];
 
   private balance: number;
@@ -198,6 +200,8 @@ export class LocalCsvBroker {
     this.orders = [];
     this.orderHistory = [];
     this.executions = [];
+    this.executionSeq = 0;
+    this.lastExecutionTime = 0;
     this.trades = [];
     this.realtimeSymbols.clear();
     this.balance = this.initialBalance;
@@ -734,9 +738,9 @@ export class LocalCsvBroker {
   }
 
   private applyFilledOrder(order: PlacedOrder, fillTime: number, isCloseOrder: boolean): void {
-    this.recordExecution(order, fillTime);
-
     if (!this.position) {
+      this.recordExecution(order, fillTime, order.qty, order.avgPrice ?? 0);
+
       const commission = this.calculateCommission(order.qty);
       this.balance -= commission;
 
@@ -771,6 +775,8 @@ export class LocalCsvBroker {
     const sameSide = current.side === order.side;
 
     if (sameSide && !isCloseOrder) {
+      this.recordExecution(order, fillTime, order.qty, order.avgPrice ?? current.avgPrice);
+
       const commission = this.calculateCommission(order.qty);
       this.balance -= commission;
 
@@ -803,6 +809,9 @@ export class LocalCsvBroker {
 
     const fillPrice = order.avgPrice ?? current.avgPrice;
     const closeQty = Math.min(order.qty, current.qty);
+
+    this.recordExecution(order, fillTime, closeQty, fillPrice);
+
     const pnl = this.calculateClosedPnl(current.side, current.avgPrice, fillPrice, closeQty);
     const commission = this.calculateCommission(closeQty);
     const netPnl = pnl - commission;
@@ -837,6 +846,9 @@ export class LocalCsvBroker {
       }
     } else if (order.qty > current.qty) {
       const openQty = order.qty - current.qty;
+
+      this.recordExecution(order, fillTime, openQty, fillPrice);
+
       this.position = {
         id: this.nextId('pos'),
         symbol: order.symbol,
@@ -1051,18 +1063,34 @@ export class LocalCsvBroker {
     );
   }
 
-  private recordExecution(order: PlacedOrder, fillTime: number): void {
+  private recordExecution(order: PlacedOrder, fillTime: number, qty: number, price: number): void {
+    if (qty <= 0) {
+      return;
+    }
+
+    const executionTime = this.nextExecutionTime(fillTime);
+    this.executionSeq += 1;
+
     const execution: Execution = {
+      id: `exe_${this.executionSeq}`,
+      orderId: order.id,
       symbol: order.symbol,
       side: order.side as any,
-      qty: order.qty,
-      price: order.avgPrice ?? this.datafeed.getCurrentBar()?.close ?? 0,
-      time: fillTime,
-      commission: this.calculateCommission(order.qty),
+      qty,
+      price,
+      time: executionTime,
+      commission: this.calculateCommission(qty),
     };
 
     this.executions.push(execution);
     this.host?.executionUpdate(execution);
+  }
+
+  private nextExecutionTime(fillTime: number): number {
+    const normalizedFillTime = Number.isFinite(fillTime) ? Math.trunc(fillTime) : Date.now();
+    const nextTime = Math.max(normalizedFillTime, this.lastExecutionTime + 1);
+    this.lastExecutionTime = nextTime;
+    return nextTime;
   }
 
   private updateSummaryValues(): void {
