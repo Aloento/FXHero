@@ -45,8 +45,13 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<IChartingLibraryWidget | null>(null);
   const simulationListenerRef = useRef<((bar: any) => void) | null>(null);
-  const labelShapeIdsRef = useRef<Array<string | number>>([]);
-  const labelSignatureRef = useRef<string>('');
+  const labelShapeStateRef = useRef<Map<string, {
+    entityId: string | number;
+    signature: string;
+    ownerStudyId: string | number;
+  }>>(new Map());
+  const isRenderingLabelsRef = useRef<boolean>(false);
+  const needsRerenderLabelsRef = useRef<boolean>(false);
   const foxStudyIdRef = useRef<string | number | null>(null);
   const estStudyIdRef = useRef<string | number | null>(null);
 
@@ -57,8 +62,23 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
     }
   }, [onChartReady]);
 
+  const clearPivotLabels = useCallback((widget: IChartingLibraryWidget) => {
+    const chart = widget.activeChart();
+    for (const state of labelShapeStateRef.current.values()) {
+      try {
+        chart.removeEntity(state.entityId as any, { disableUndo: true });
+      } catch {
+        // ignore stale ids when chart was recreated
+      }
+    }
+    labelShapeStateRef.current.clear();
+    isRenderingLabelsRef.current = false;
+    needsRerenderLabelsRef.current = false;
+  }, []);
+
   const applyDefaultStudies = useCallback(async (widget: IChartingLibraryWidget) => {
     const chart = widget.activeChart();
+    clearPivotLabels(widget);
     chart.removeAllStudies();
     foxStudyIdRef.current = null;
     estStudyIdRef.current = null;
@@ -94,39 +114,36 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
 
     chart.executeActionById('Chart.TimeScale.Reset' as ChartActionId);
     chart.executeActionById('Chart.Scales.Reset' as ChartActionId);
-  }, []);
-
-  const clearPivotLabels = useCallback((widget: IChartingLibraryWidget) => {
-    const chart = widget.activeChart();
-    for (const id of labelShapeIdsRef.current) {
-      try {
-        chart.removeEntity(id as any, { disableUndo: true });
-      } catch {
-        // ignore stale ids when chart was recreated
-      }
-    }
-    labelShapeIdsRef.current = [];
-    labelSignatureRef.current = '';
-  }, []);
+  }, [clearPivotLabels]);
 
   const renderPivotLabels = useCallback(async (widget: IChartingLibraryWidget) => {
-    const chart = widget.activeChart();
-    const labels = [...datafeed.getPivotLabels('FOX'), ...datafeed.getPivotLabels('EST')]
-      .sort((a, b) => a.time - b.time);
-    const signature = labels
-      .map((l) => `${l.id}|${l.time}|${l.price}|${l.text}`)
-      .join(';');
-    if (signature === labelSignatureRef.current) {
+    if (widgetRef.current !== widget) {
       return;
     }
 
-    clearPivotLabels(widget);
-    labelSignatureRef.current = signature;
+    const chart = widget.activeChart();
+    const labels = [
+      ...datafeed.getPivotLabels('FOX').map((label) => ({ ...label, kind: 'FOX' as const })),
+      ...datafeed.getPivotLabels('EST').map((label) => ({ ...label, kind: 'EST' as const })),
+    ].sort((a, b) => a.time - b.time);
+
+    const desiredById = new Map<string, {
+      point: { time: number; price: number };
+      text: string;
+      color: string;
+      signature: string;
+      ownerStudyId: string | number;
+    }>();
 
     const offset = Math.max(datafeed.getMinMove() * 8, datafeed.getMinMove());
     const staggerMap = new Map<string, number>();
     for (const label of labels) {
-      const isFox = label.id.startsWith('FOX_');
+      const isFox = label.kind === 'FOX';
+      const ownerStudyId = isFox ? foxStudyIdRef.current : estStudyIdRef.current;
+      if (ownerStudyId == null) {
+        continue;
+      }
+
       const key = `${label.time}_${label.isTop ? 'T' : 'B'}`;
       const staggerIndex = staggerMap.get(key) ?? 0;
       staggerMap.set(key, staggerIndex + 1);
@@ -136,29 +153,97 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
       const staggerOffset = staggerIndex * datafeed.getMinMove() * 6;
       const finalOffset = sideBase * (offset + kindOffset + staggerOffset);
 
+      const pointTime = label.time < 1e12 ? label.time : Math.floor(label.time / 1000);
+      const pointPrice = label.price + finalOffset;
+      const text = `${label.isTop ? '▼' : '▲'} ${label.text}`;
+      const signature = `${pointTime}|${pointPrice}|${text}|${label.color}|${ownerStudyId}`;
+
+      desiredById.set(label.id, {
+        point: {
+          time: pointTime,
+          price: pointPrice,
+        },
+        text,
+        color: label.color,
+        signature,
+        ownerStudyId,
+      });
+    }
+
+    for (const [labelId, state] of labelShapeStateRef.current.entries()) {
+      const next = desiredById.get(labelId);
+      const shouldRecreate = !next || next.signature !== state.signature || next.ownerStudyId !== state.ownerStudyId;
+      if (!shouldRecreate) {
+        continue;
+      }
+
+      try {
+        chart.removeEntity(state.entityId as any, { disableUndo: true });
+      } catch {
+        // ignore stale ids
+      }
+      labelShapeStateRef.current.delete(labelId);
+    }
+
+    for (const [labelId, desired] of desiredById.entries()) {
+      if (labelShapeStateRef.current.has(labelId)) {
+        continue;
+      }
+
+      if (widgetRef.current !== widget) {
+        return;
+      }
+
       const shapeId = await chart.createShape(
-        {
-          time: Math.floor(label.time / 1000),
-          price: label.price + finalOffset,
-        } as any,
+        desired.point as any,
         {
           shape: 'text',
-          text: `${label.isTop ? '▼' : '▲'} ${label.text}`,
+          text: desired.text,
           lock: true,
           disableSelection: true,
           disableSave: true,
           disableUndo: true,
-          ownerStudyId: (isFox ? foxStudyIdRef.current : estStudyIdRef.current) as any,
+          ownerStudyId: desired.ownerStudyId as any,
           showInObjectsTree: false,
           zOrder: 'top',
           overrides: {
-            color: label.color,
+            color: desired.color,
           } as any,
         }
       );
-      labelShapeIdsRef.current.push(shapeId as any);
+
+      labelShapeStateRef.current.set(labelId, {
+        entityId: shapeId as any,
+        signature: desired.signature,
+        ownerStudyId: desired.ownerStudyId,
+      });
     }
-  }, [clearPivotLabels, datafeed]);
+  }, [datafeed]);
+
+  const schedulePivotLabelRender = useCallback((widget: IChartingLibraryWidget) => {
+    if (widgetRef.current !== widget) {
+      return;
+    }
+
+    if (isRenderingLabelsRef.current) {
+      needsRerenderLabelsRef.current = true;
+      return;
+    }
+
+    isRenderingLabelsRef.current = true;
+    const run = async () => {
+      try {
+        do {
+          needsRerenderLabelsRef.current = false;
+          await renderPivotLabels(widget);
+        } while (needsRerenderLabelsRef.current);
+      } finally {
+        isRenderingLabelsRef.current = false;
+      }
+    };
+
+    void run();
+  }, [renderPivotLabels]);
 
   useEffect(() => {
     let isMounted = true;
@@ -224,10 +309,10 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
             return;
           }
           await applyDefaultStudies(tvWidget);
-          await renderPivotLabels(tvWidget);
+          schedulePivotLabelRender(tvWidget);
           const onSimulationBar = () => {
             if (!isMounted) return;
-            void renderPivotLabels(tvWidget);
+            schedulePivotLabelRender(tvWidget);
           };
           simulationListenerRef.current = onSimulationBar;
           datafeed.subscribeSimulation(onSimulationBar);
@@ -265,7 +350,7 @@ const AdvancedChart: React.FC<AdvancedChartProps> = ({ datafeed, onChartReady, t
       }
     };
     // 注意：只在datafeed改变时重新初始化，不在onChartReady改变时
-  }, [applyDefaultStudies, clearPivotLabels, datafeed, memoizedOnChartReady, renderPivotLabels, trading]);
+  }, [applyDefaultStudies, clearPivotLabels, datafeed, memoizedOnChartReady, schedulePivotLabelRender, trading]);
 
   return <div ref={chartContainerRef} style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />;
 };
